@@ -1,0 +1,14 @@
+version: 1
+app: api
+description: In-memory todo API (Go, standard library only)
+
+build:
+  template: go
+
+run:
+  ports:
+    - "auto:8080"
+
+health:
+  http: /healthz
+  port: 8080

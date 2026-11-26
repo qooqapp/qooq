@@ -1,0 +1,16 @@
+# Two projects deployed together: web waits for api, then reaches it by name.
+version: 1
+stack: todo
+description: A todo API and the web page that uses it
+
+projects:
+  api:
+    path: ./api
+  web:
+    path: ./web
+    depends_on:
+      - api                 # deploy web only once api is up
+    env:
+      # Server-side calls stay inside the stack's network, so they use api's
+      # container name and container port.
+      API_INTERNAL: "http://${project.api.host}:8080"

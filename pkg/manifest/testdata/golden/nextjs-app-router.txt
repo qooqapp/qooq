@@ -1,0 +1,43 @@
+kind: node-next
+
+notes:
+  - package-lock.json found, installing with npm ci
+  - next detected: building in the image and starting "npx next start"
+
+rendered qooq.yaml:
+  # generated
+  #
+  # Edit this freely — qooq keeps your changes and will not regenerate it.
+  # Field reference: docs/DEPLOY-CONFIG.md
+  #
+  # What was detected (node-next):
+  #   - package-lock.json found, installing with npm ci
+  #   - next detected: building in the image and starting "npx next start"
+  
+  version: 1
+  app: nextjs-app-router
+  
+  build:
+    template: node
+    template_vars:
+      build_cmd: "npm run build"
+      install_cmd: "npm ci"
+      start_cmd: "npx next start"
+  
+  run:
+    ports:
+      - "auto:3000"
+  
+  # A health check lets qooq notice when this stops answering and restart it.
+  # qooq cannot tell which path your app serves — that is in the code, not the
+  # files — so try these against a running instance and uncomment the one that
+  # answers 200:
+  #
+  #   curl -i http://localhost:3000/healthz
+  #   curl -i http://localhost:3000/health
+  #   curl -i http://localhost:3000/ping
+  #   curl -i http://localhost:3000/
+  #
+  # health:
+  #   http: /healthz
+  #   port: 3000

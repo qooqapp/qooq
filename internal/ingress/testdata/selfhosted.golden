@@ -1,0 +1,452 @@
+== config 0
+{
+  "admin": {
+    "listen": "127.0.0.1:2019"
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "qooq": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            ":80"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "rewrite",
+                  "strip_path_prefix": "/api"
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "api:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "api.example.com",
+                    "api.localhost",
+                    "api.192.168.1.50.nip.io"
+                  ],
+                  "path": [
+                    "/api",
+                    "/api/*"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "_web:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "web.localhost",
+                    "web.192.168.1.50.nip.io"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "acme--prod_blog:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "blog-k3x9q.apps.example.net",
+                    "blog.acme--prod.localhost",
+                    "blog.acme--prod.192.168.1.50.nip.io",
+                    "evil.example.com"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "acme--prod_quiet:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "quiet.acme--prod.localhost",
+                    "quiet.acme--prod.192.168.1.50.nip.io"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "shop_front:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "front.shop.localhost",
+                    "front.shop.192.168.1.50.nip.io",
+                    "shop.example.com"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+ports [{"ContainerPort":80,"HostPort":80,"Protocol":"","HostIP":"0.0.0.0","AutoHost":false}]
+== config 1
+{
+  "admin": {
+    "listen": "127.0.0.1:2019"
+  },
+  "apps": {
+    "http": {
+      "http_port": 18080,
+      "servers": {
+        "qooq": {
+          "automatic_https": {
+            "disable": false,
+            "skip": [
+              "api.192.168.1.50.nip.io",
+              "api.localhost",
+              "blog.acme--prod.192.168.1.50.nip.io",
+              "blog.acme--prod.localhost",
+              "front.shop.192.168.1.50.nip.io",
+              "front.shop.localhost",
+              "quiet.acme--prod.192.168.1.50.nip.io",
+              "quiet.acme--prod.localhost",
+              "web.192.168.1.50.nip.io",
+              "web.localhost"
+            ]
+          },
+          "listen": [
+            ":18080",
+            ":443"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "rewrite",
+                  "strip_path_prefix": "/api"
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "api:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "api.example.com",
+                    "api.localhost",
+                    "api.192.168.1.50.nip.io"
+                  ],
+                  "path": [
+                    "/api",
+                    "/api/*"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "_web:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "web.localhost",
+                    "web.192.168.1.50.nip.io"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "acme--prod_blog:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "blog-k3x9q.apps.example.net",
+                    "blog.acme--prod.localhost",
+                    "blog.acme--prod.192.168.1.50.nip.io",
+                    "evil.example.com"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "acme--prod_quiet:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "quiet.acme--prod.localhost",
+                    "quiet.acme--prod.192.168.1.50.nip.io"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "shop_front:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "front.shop.localhost",
+                    "front.shop.192.168.1.50.nip.io",
+                    "shop.example.com"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+ports [{"ContainerPort":18080,"HostPort":18080,"Protocol":"","HostIP":"0.0.0.0","AutoHost":false},{"ContainerPort":443,"HostPort":443,"Protocol":"","HostIP":"0.0.0.0","AutoHost":false}]
+== config 2
+{
+  "admin": {
+    "listen": "127.0.0.1:2019"
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "qooq": {
+          "automatic_https": {
+            "disable": false,
+            "disable_redirects": true,
+            "skip": [
+              "quiet.acme--prod.192.168.1.50.nip.io",
+              "quiet.acme--prod.localhost"
+            ]
+          },
+          "listen": [
+            ":80",
+            ":443"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "rewrite",
+                  "strip_path_prefix": "/api"
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "api:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "api.example.com",
+                    "api.localhost",
+                    "api.192.168.1.50.nip.io"
+                  ],
+                  "path": [
+                    "/api",
+                    "/api/*"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "_web:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "web.localhost",
+                    "web.192.168.1.50.nip.io"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "acme--prod_blog:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "blog-k3x9q.apps.example.net",
+                    "blog.acme--prod.localhost",
+                    "blog.acme--prod.192.168.1.50.nip.io",
+                    "evil.example.com"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "acme--prod_quiet:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "quiet.acme--prod.localhost",
+                    "quiet.acme--prod.192.168.1.50.nip.io"
+                  ]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "shop_front:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "front.shop.localhost",
+                    "front.shop.192.168.1.50.nip.io",
+                    "shop.example.com"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "tls": {
+      "automation": {
+        "policies": [
+          {
+            "issuers": [
+              {
+                "module": "internal"
+              }
+            ],
+            "subjects": [
+              "api.192.168.1.50.nip.io",
+              "api.example.com",
+              "api.localhost",
+              "blog-k3x9q.apps.example.net",
+              "blog.acme--prod.192.168.1.50.nip.io",
+              "blog.acme--prod.localhost",
+              "evil.example.com",
+              "front.shop.192.168.1.50.nip.io",
+              "front.shop.localhost",
+              "shop.example.com",
+              "web.192.168.1.50.nip.io",
+              "web.localhost"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
+ports [{"ContainerPort":80,"HostPort":80,"Protocol":"","HostIP":"0.0.0.0","AutoHost":false},{"ContainerPort":443,"HostPort":443,"Protocol":"","HostIP":"0.0.0.0","AutoHost":false}]

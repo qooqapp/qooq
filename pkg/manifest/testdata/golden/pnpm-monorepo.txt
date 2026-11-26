@@ -1,0 +1,23 @@
+kind: monorepo
+
+notes:
+  - pnpm detected, enabling corepack
+  - this is a workspace root, not an app: apps/web, packages/ui
+  - point the target at the subdirectory holding the app (context_subdir), or give each one its own project in a stack
+
+rendered qooq.yaml:
+  # generated
+  #
+  # Edit this freely — qooq keeps your changes and will not regenerate it.
+  # Field reference: docs/DEPLOY-CONFIG.md
+  #
+  # What was detected (monorepo):
+  #   - pnpm detected, enabling corepack
+  #   - this is a workspace root, not an app: apps/web, packages/ui
+  #   - point the target at the subdirectory holding the app (context_subdir), or give each one its own project in a stack
+  
+  version: 1
+  app: pnpm-monorepo
+  
+  build:
+    dockerfile: Dockerfile

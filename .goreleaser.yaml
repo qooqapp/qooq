@@ -1,0 +1,115 @@
+# goreleaser builds the release artifacts and publishes them to GitHub Releases.
+#
+#   local dry run:  goreleaser release --snapshot --clean   (builds into dist/, publishes nothing)
+#   real release:   push a tag; .github/workflows/release.yml does the rest
+#
+# Through the pinned image, the dry run needs GOTOOLCHAIN=auto — v2.5.1 ships
+# Go 1.23 with GOTOOLCHAIN=local, which cannot build a module whose go
+# directive is newer:
+#
+#   docker run --rm -v "$PWD/..:/src" -w /src/qooq -e GOTOOLCHAIN=auto \
+#     goreleaser/goreleaser:v2.5.1 release --snapshot --clean
+#
+# CI is unaffected: goreleaser-action installs the toolchain from go.mod.
+#
+# The CLI is released from its own repository (qooqapp/qooq-cli); this file
+# covers the two daemons only.
+version: 2
+
+project_name: qooq
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: qooqd
+    main: ./cmd/qooqd
+    binary: qooqd
+    env:
+      # The whole repo is CGO-free (enforced by `make check`), which is what
+      # makes cross-compiling to every target below possible with no toolchain
+      # beyond Go itself.
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/qooqapp/qooq/internal/version.Version={{.Version}}
+      - -X github.com/qooqapp/qooq/internal/version.Commit={{.FullCommit}}
+
+  - id: qooq-watcher
+    main: ./cmd/qooq-watcher
+    binary: qooq-watcher
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/qooqapp/qooq/internal/version.Version={{.Version}}
+      - -X github.com/qooqapp/qooq/internal/version.Commit={{.FullCommit}}
+
+archives:
+  # One archive per platform containing both daemons, rather than one per
+  # binary: they are always deployed together, and asking someone to find and
+  # download two files to run one thing is a step that only exists to be
+  # forgotten.
+  - id: qooq
+    builds: [qooqd, qooq-watcher]
+    name_template: "qooq_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    files:
+      - README.md
+      - README.zh-TW.md
+      - LICENSE*
+      - docs/USAGE.md
+      - docs/USAGE.zh-TW.md
+      - docs/DEPLOY-CONFIG.md
+      - docs/DEPLOY-CONFIG.zh-TW.md
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  # Sorted by the commit-message prefixes this repo already uses.
+  use: git
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\(.+\))?:'
+      order: 1
+    - title: Build and release
+      regexp: '^(build|ci)(\(.+\))?:'
+      order: 2
+    - title: Other
+      order: 99
+  filters:
+    exclude:
+      - '^docs(\(.+\))?:'
+      - '^test(\(.+\))?:'
+      - '^chore(\(.+\))?:'
+
+release:
+  draft: false
+  # A pre-1.0 tag with a suffix (v0.2.0-rc1) should not become the version
+  # people land on by default.
+  prerelease: auto
+  header: |
+    ## qooq {{ .Tag }}
+
+    Two daemons: `qooqd` (the orchestrator) and `qooq-watcher` (GitOps).
+    The `qooq` CLI ships separately from
+    [qooqapp/qooq-cli](https://github.com/qooqapp/qooq-cli).
+
+    Install: download the archive for your platform, extract, and put both
+    binaries somewhere on your PATH. Verify with `qooqd -version`.
+  footer: |
+    ---
+    Usage: [docs/USAGE.md](https://github.com/qooqapp/qooq/blob/{{ .Tag }}/docs/USAGE.md) ·
+    Manifest reference: [docs/DEPLOY-CONFIG.md](https://github.com/qooqapp/qooq/blob/{{ .Tag }}/docs/DEPLOY-CONFIG.md)

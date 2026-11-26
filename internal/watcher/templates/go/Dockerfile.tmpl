@@ -1,0 +1,15 @@
+FROM golang:{{.go_version}}-alpine AS build
+WORKDIR /src
+{{if .build_deps}}RUN apk add --no-cache {{.build_deps}}
+{{end}}COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED={{.cgo}} GOOS=linux go build -o /out/app {{.build_path}}
+
+FROM {{.base_image}}
+{{if .runtime_deps}}RUN apk add --no-cache {{.runtime_deps}}
+{{end}}WORKDIR {{.workdir}}
+COPY --from=build /out/app {{.workdir}}/app
+{{if .extra_copy}}COPY {{.extra_copy}} {{.workdir}}/
+{{end}}EXPOSE {{.port}}
+ENTRYPOINT ["{{.workdir}}/app"]

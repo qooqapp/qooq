@@ -1,0 +1,20 @@
+# qooq.yaml — app manifest（精簡格式；完整欄位參考見 docs/DEPLOY-CONFIG.md）
+version: 1
+app: static-web
+description: 最小可部署的靜態網頁範例（唯一手寫 Dockerfile 的對照組，其餘範例都用 build.template）
+requests:            # 部署前檢查 host 容量夠不夠（不設限容器）
+  cpu: 0.25
+  memory: 64Mi
+# limits 省略：容器上限自動 = 2× requests（cpu 0.5 / memory 128Mi）
+domain: static-web.example.com
+
+build:
+  dockerfile: Dockerfile   # 手寫 Dockerfile；其餘範例改用 build.template 不放 Dockerfile
+
+run:
+  ports:
+    - "auto:80"
+
+health:
+  http: /
+  port: 80

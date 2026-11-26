@@ -1,0 +1,16 @@
+FROM python:{{.python_version}}-slim
+WORKDIR /app
+# Whichever dependency files exist (the globs let either be missing). Copied
+# before the source so editing code does not reinstall every package.
+COPY requirements*.txt pyproject.toml* ./
+# requirements.txt when there is one; otherwise [project].dependencies from
+# pyproject.toml (uv, poetry 2, hatch, pdm all write them there), installed
+# with uv so no build backend has to package the project first.
+RUN if [ -f requirements.txt ]; then \
+      pip install --no-cache-dir -r requirements.txt; \
+    else \
+      pip install --no-cache-dir uv && uv pip install --system --no-cache -r pyproject.toml; \
+    fi
+COPY . .
+EXPOSE {{.port}}
+CMD {{.start_cmd}}

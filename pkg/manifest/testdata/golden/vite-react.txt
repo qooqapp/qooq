@@ -1,0 +1,45 @@
+kind: static-frontend
+
+notes:
+  - no start script and no server entry point: treating this as a static front end
+  - building with "npm run build" in the image and serving dist/ with nginx; unknown paths fall back to index.html for client-side routing
+  - dist/ is a guess — change static_dir if the build writes elsewhere
+
+rendered qooq.yaml:
+  # generated
+  #
+  # Edit this freely — qooq keeps your changes and will not regenerate it.
+  # Field reference: docs/DEPLOY-CONFIG.md
+  #
+  # What was detected (static-frontend):
+  #   - no start script and no server entry point: treating this as a static front end
+  #   - building with "npm run build" in the image and serving dist/ with nginx; unknown paths fall back to index.html for client-side routing
+  #   - dist/ is a guess — change static_dir if the build writes elsewhere
+  
+  version: 1
+  app: vite-react
+  
+  build:
+    template: static-nginx
+    template_vars:
+      build_cmd: "npm run build"
+      spa: "true"
+      static_dir: "dist"
+  
+  run:
+    ports:
+      - "auto:80"
+  
+  # A health check lets qooq notice when this stops answering and restart it.
+  # qooq cannot tell which path your app serves — that is in the code, not the
+  # files — so try these against a running instance and uncomment the one that
+  # answers 200:
+  #
+  #   curl -i http://localhost:80/healthz
+  #   curl -i http://localhost:80/health
+  #   curl -i http://localhost:80/ping
+  #   curl -i http://localhost:80/
+  #
+  # health:
+  #   http: /healthz
+  #   port: 80

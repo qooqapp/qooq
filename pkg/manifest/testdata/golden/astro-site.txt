@@ -1,0 +1,40 @@
+kind: node-astro
+
+notes:
+  - astro detected: building in the image and starting "node ./dist/server/entry.mjs"
+
+rendered qooq.yaml:
+  # generated
+  #
+  # Edit this freely — qooq keeps your changes and will not regenerate it.
+  # Field reference: docs/DEPLOY-CONFIG.md
+  #
+  # What was detected (node-astro):
+  #   - astro detected: building in the image and starting "node ./dist/server/entry.mjs"
+  
+  version: 1
+  app: astro-site
+  
+  build:
+    template: node
+    template_vars:
+      build_cmd: "npm run build"
+      start_cmd: "node ./dist/server/entry.mjs"
+  
+  run:
+    ports:
+      - "auto:3000"
+  
+  # A health check lets qooq notice when this stops answering and restart it.
+  # qooq cannot tell which path your app serves — that is in the code, not the
+  # files — so try these against a running instance and uncomment the one that
+  # answers 200:
+  #
+  #   curl -i http://localhost:3000/healthz
+  #   curl -i http://localhost:3000/health
+  #   curl -i http://localhost:3000/ping
+  #   curl -i http://localhost:3000/
+  #
+  # health:
+  #   http: /healthz
+  #   port: 3000

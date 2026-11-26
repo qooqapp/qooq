@@ -1,0 +1,309 @@
+# =============================================================================
+# qooq.yaml — complete field reference (version 1)
+# =============================================================================
+#
+# This file lists **every** available field with its default value, for lookup;
+# it is not meant to be copied wholesale.
+# A real qooq.yaml only needs the parts that differ from the defaults -- most
+# projects fit in 10 lines or fewer.
+#
+#   Smallest usable qooq.yaml:
+#     version: 1
+#     app: my-app
+#     build: {template: go}
+#     run: {ports: ["8080:8080"]}
+#
+# Runnable examples are in ../examples/; the prose reference is DEPLOY-CONFIG.md.
+# Fields marked [M23] were added in 2026-07.
+# =============================================================================
+
+version: 1                      # required; only 1 is supported
+app: my-app                     # app name, descriptive only (does not affect deployment)
+description: One-line summary   # plain metadata
+
+# Public domain of the service. When qooqd runs with -ingress (qooq up turns it
+# on by default) requests for it are routed to this app; without the ingress it
+# is metadata, shown in component get.
+domain: app.example.com
+
+# ---------------------------------------------------------------------------
+# network [M23] — which container network this app joins
+# ---------------------------------------------------------------------------
+# Omitted = a dedicated network `qooq-<component name>`, containing only this
+# app and the services it declares.
+# A shared name = join that network; components on the same network can reach
+# each other by **component name** (e.g. http://my-api:8080), and the address
+# does not change across redeploys (container IPs change, names do not).
+#
+# This is the **only place to connect multiple independent projects**: each
+# project's qooq.yaml writes the same name once.
+network: my-stack
+
+# ---------------------------------------------------------------------------
+# services [M23] — dependency containers this app needs (databases, caches)
+# ---------------------------------------------------------------------------
+# Omitted = no dependency services.
+# Each entry expands into a **regular component** named `<component name>-<key>`
+# (example below: my-app-db), on the same network and in the same group as the
+# app. qooq component ls/get/logs/stop/rollback all apply.
+#
+# qooq **starts the services and waits until they are ready before deploying the
+# app** (up to 3 minutes).
+services:
+  db:                           # the key determines the component suffix and env var prefix (db -> DB_*)
+    type: postgres              # postgres | mysql | mariadb | redis | mongo | custom
+                                # custom requires you to provide image and port
+
+    # --- Everything below is optional: type already brings a full set of defaults ---
+    version: "16"               # substituted into the type's image template (postgres:16-alpine)
+    database: my_app            # default = component name (lowercased, non-alphanumerics become underscores)
+    user: my_app                # same default as above
+    password: ${env.DB_PASSWORD}
+                                # omitted = a 32-character password is generated on first use and
+                                # **remembered permanently** (stored on the target, encrypted when
+                                # secret.key is set).
+                                # WARNING: the password is written into the data directory when the
+                                #   DB is initialized; changing it later makes the app unable to open
+                                #   its own data. The symptom is auth failed and is very hard to trace.
+
+    storage:
+      volume: my-app-db-data    # default `<component name>-<key>-data`
+      path: /var/lib/postgresql/data   # default is determined by type
+      size: 10Gi                # recorded only; not enforced in v1
+
+    image: postgres:16-alpine   # if given, fully overrides the image derived from type
+    port: 5432                  # default is determined by type
+    env:                        # layered on top of the type's bootstrap variables
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports: []                   # publish to the host, e.g. ["15432:5432"].
+                                # **Not published by default**: the service is visible only inside the network.
+    health: {}                  # override the type's built-in health check (same fields as health: below)
+
+    # For clustering. v1 accepts only these two values; anything else is rejected
+    # with an explicit "not supported yet" (it will not quietly run a single copy)
+    replicas: 1
+    mode: single                # single | replica | cluster (the latter two are not implemented yet)
+
+# Environment variables the app receives automatically (<KEY> = service key uppercased, db -> DB):
+#   DB_HOST=my-app-db  DB_PORT=5432  DB_USER=my_app  DB_PASSWORD=…
+#   DB_DATABASE=my_app  DB_SCHEME=postgres  DB_URL=postgres://…
+#   DATABASE_URL=postgres://…      <- also provided, as a convention name, when the service key is db
+# If the framework expects different variable names, map them yourself with
+# run.env and ${service.db.*} below.
+
+# ---------------------------------------------------------------------------
+# build — how to turn the repo into something runnable
+# ---------------------------------------------------------------------------
+# Whole block omitted = use the Dockerfile at the repo root.
+build:
+  dockerfile: docker/Dockerfile  # Dockerfile location (default `Dockerfile`).
+                                 # **If the project ships its own Dockerfile, prefer it**; do not use a template.
+                                 # Mutually exclusive with template.
+  context: .                     # build context subdirectory, default repo root (for monorepos)
+
+  # template and dockerfile are mutually exclusive: name a built-in template and the repo needs no Dockerfile at all.
+  # template: go
+  # template_vars:               # override only what differs from the defaults
+  #   # --- go template ---
+  #   go_version: "1.25"         # must be >= the version declared in go.mod, otherwise the build fails
+  #   build_path: "."
+  #   base_image: alpine:3.20
+  #   port: "8080"
+  #   cgo: "0"                   # [M23] set "1" for cgo dependencies such as mattn/go-sqlite3,
+  #                              # otherwise it **compiles but blows up at runtime** (requires cgo to work)
+  #   build_deps: gcc musl-dev   # [M23] apk packages for the build stage (needed by cgo)
+  #   runtime_deps: ""           # [M23] apk packages for the final image
+  #   extra_copy: config.toml    # [M23] extra files to copy into the final image (space-separated)
+  #   workdir: /app              # [M23] WORKDIR of the final image (the binary goes here)
+  #   # --- node template ---
+  #   node_version: "20"
+  #   install_cmd: npm install --omit=dev
+  #   build_cmd: ""              # [M23] when non-empty, splits into two stages: build -> runtime.
+  #                              # Required for anything with a compile step, such as Nuxt/Next/Vite
+  #   start_cmd: node index.js
+  #   corepack: ""               # [M23] set "true" to enable pnpm/yarn
+  #   # --- see DEPLOY-CONFIG.md for the other templates ---
+
+  # process runtime only (takes effect only when requests.runtime: process)
+  # command: ["go", "build", "-o", "bin/app", "."]   # build command run in the clone directory
+  # artifact: bin/app                                # location of the build artifact (executable)
+
+# ---------------------------------------------------------------------------
+# run — how to run it
+# ---------------------------------------------------------------------------
+run:
+  command: []                   # override the image's start command (argv in process mode)
+
+  # --- environment variables --------------------------------------------
+  # Precedence (low -> high): services auto-injection -> env_file (in order) -> env -> the
+  # operator's deploy_spec.env. In other words: what you write here always overrides what
+  # services inject and what the files contain.
+
+  env_file:                     # [M23] list of dotenv files, loaded in order (later overrides earlier)
+    - .env.defaults             #   repo-relative path: versioned together with the code
+    - /etc/my-app/secrets.env   #   absolute host path: secrets stay out of the repo
+    - "appdata:/config/app.env" #   a file inside a named volume (volume name:path inside the volume)
+    # Format: one KEY=VALUE per line; `#` comments, blank lines, an `export ` prefix, and paired quotes are all accepted.
+    # WARNING: file **contents are not interpolated**: any ${...} inside is passed to the app verbatim.
+
+  env:                          # directly specified environment variables (values support ${...} interpolation)
+    LOG_LEVEL: info
+    # Compose the variable names the framework expects from a service's connection info:
+    MYAPP_DATABASE_HOST: "${service.db.host}"
+    MYAPP_DATABASE_PORT: "${service.db.port}"
+    MYAPP_DATABASE_PASSWORD: "${service.db.password}"
+    # Reference an environment variable of the watcher process (keeps secrets out of the repo):
+    STRIPE_KEY: "${env.STRIPE_KEY}"
+    # Cross-project connection: on the same network use the other side's component name (not 127.0.0.1)
+    API_BASE_INTERNAL: http://my-api:8080
+
+  # --- ports -----------------------------------------------------------
+  ports:
+    - "8080:8080"               # "host:container"
+    - "8081"                    # bare container port (not published to the host)
+    # no effect under the process runtime (only logs a one-line notice)
+
+  # --- files [M23]: inject config files (read-only by default) ----------
+  # Both the short string and the long object forms are accepted; the source kind is determined by the string itself:
+  #
+  #   relative path (./x, config/x)      -> repo content, copied out after build, **versioned per commit**
+  #   absolute path (/etc/x)             -> an existing file/directory on the host, mounted as-is
+  #   bare name without slash (appdata)  -> named volume (a directory managed by the watcher)
+  #
+  # WARNING: a name containing a dot, such as `config.toml`, **counts as a path, not a volume name**.
+  #   To refer to a file at the repo root, writing `./config.toml` is the least ambiguous.
+  files:
+    - "./config.toml:/app/config.toml"        # short string: src:dst[:ro|rw]
+    - from: config/app.yaml                   # equivalent long object (easier to read when you want to add comments)
+      to: /app/config/app.yaml
+      mode: ro                                # ro (the default for files) | rw
+    - "/etc/my-app/license.key:/app/license.key"
+
+  # Why files are read-only by default: if the container runs as root, a writable mount leaves
+  # root-owned files on the host that the watcher cannot clean up later, slowly filling the disk.
+  # Anything that needs writing belongs in volumes.
+  #
+  # Why files are versioned per commit: bind mounts are live. Overwriting in place would let
+  # the **old container that is still running** read the new config immediately, and after a
+  # rollback you would get the new version's config. With versioning, only the latest two copies
+  # are kept (current + previous, matching rollback semantics).
+
+  # --- volumes [M23]: data persistence (read-write by default, never pruned) ---
+  volumes:
+    - "appdata:/app/data"                     # named volume (recommended)
+    - "/srv/my-app/uploads:/app/uploads"      # specify a host directory directly
+    - from: cache                             # long object form
+      to: /app/cache
+      mode: rw
+
+  # A named volume lives at `<mounts.dir>/<component>/volumes/<name>` and is
+  # **never cleaned up** -- deleting the target does not delete it. You have to clean it up yourself.
+  #
+  # WARNING: a **single file** that the app creates itself (sqlite's data.db) cannot be mounted with files:
+  #   the source of a bind mount must already exist. The correct approach is to mount its **parent
+  #   directory** as a volume, then point the app's path setting at a location under that directory.
+
+# ---------------------------------------------------------------------------
+# health — active liveness probe
+# ---------------------------------------------------------------------------
+# Whole block omitted = no active probing (container crashes are still detected by the monitor and handled per policy).
+# WARNING: a wrong path causes a crash loop, which is worse than not setting it -- **when unsure, leave the whole block out**.
+health:
+  http: /healthz                # http probe path (mutually exclusive with exec)
+  port: 8080                    # just write a port that appears in run.ports: if it matches a host port,
+                                # it probes 127.0.0.1:<host port>; if it matches a container port (bare port,
+                                # not published to the host), it probes the container IP directly. If both
+                                # match, the host port wins.
+                                # If neither matches -> treated as a host port (very likely unreachable, and the
+                                # most common source of crash loops). WARNING: Docker Desktop is an exception: the
+                                # container runs inside a VM and the host cannot reach the container IP, so without
+                                # a published host port you must use exec instead.
+  # exec: ["sh", "-c", "pgrep myapp"]   # exec probe (runs inside the container)
+  interval: 10s                 # default 10s
+  timeout: 5s                   # default 5s
+  failures: 3                   # consecutive failures that trigger a restart, default 3
+  delay: 5s                     # grace period after start, default 5s
+
+# ---------------------------------------------------------------------------
+# ingress — how the reverse proxy exposes this app (only effective with qooqd -ingress)
+# ---------------------------------------------------------------------------
+# Whole block omitted = derived URLs (<name>.localhost etc.), the whole host is forwarded, the first port is used.
+ingress:
+  hosts:                        # extra hostnames; added to the domain: above, not a replacement
+    - app.example.com
+    - www.example.com
+  port: 8080                    # which port to expose when there are several; must be one listed in run.ports
+  path: /api                    # forward only this prefix, so two apps can share one domain
+  strip_path: true              # strip the prefix before forwarding (set it when the app itself serves /)
+  tls: true                     # overrides the daemon's -ingress-tls; can only turn it off, not on
+                                # (writing true when the daemon has no 443 listener is ignored with a warning)
+
+# ---------------------------------------------------------------------------
+# inputs — values this app needs but the repo cannot possibly know
+# ---------------------------------------------------------------------------
+# Whole block omitted = no external input needed (the vast majority of cases).
+# When declared, a missing value does not make the deployment "fail"; instead it stops at
+# last_build_status: needs_input (no build is run), `qooq watch get` prints what is missing,
+# and `qooq watch set-input` fills it in.
+inputs:
+  STRIPE_KEY:
+    description: Stripe secret key, from dashboard → Developers → API keys
+                                # explanation for the person filling in the value -- **this is the whole point of declaring an input**
+    required: true              # block the deployment when there is no value (mutually exclusive with default)
+    secret: true                # stored encrypted, the API always returns ***
+    example: sk_live_xxx        # example value, shown together with description
+  PUBLIC_HOST:
+    description: Address reachable from the browser
+    default: ${host}            # with a default it is never considered missing; default itself is interpolated too
+
+# Reference with ${input.STRIPE_KEY}. Undeclared names cannot be referenced (unknown reference error).
+# Values live on the target, not in the repo, so the same repo deployed as two targets can have different values.
+
+# ---------------------------------------------------------------------------
+# policy — restart policy
+# ---------------------------------------------------------------------------
+policy:
+  restart: on-failure           # always (default) | on-failure | no
+  replicas: 1                   # reserved field; v1 supports only 1
+
+# ---------------------------------------------------------------------------
+# requests — pre-deployment host capacity check (like k8s requests; **does not limit** the container)
+# ---------------------------------------------------------------------------
+# Checked before the build; on mismatch it fails immediately instead of wasting a build.
+requests:
+  cpu: 0.25                     # cores
+  memory: 256Mi                 # supports Ki/Mi/Gi (base 1024) and KB/MB/GB (base 1000)
+  arch: [amd64, arm64]          # allowed architectures (aliases such as x86_64/aarch64 are normalized)
+  runtime: container            # container (default) | process
+                                # WARNING: process + services is rejected outright: there is no container engine
+  disk: 10Gi                    # v1 only logs it, does not validate
+  gpu: ""                       # v1 only logs it, does not validate
+
+# ---------------------------------------------------------------------------
+# limits — hard cgroup caps for the container (like k8s limits)
+# ---------------------------------------------------------------------------
+# A field omitted = it defaults to `multiplier x the corresponding requests` (multiplier defaults to 2.0, configurable on the watcher).
+# requests also omitted = no limit at all.
+limits:
+  cpu: 0.5
+  memory: 512Mi
+
+# =============================================================================
+# Namespaces available for ${...} interpolation
+# =============================================================================
+# Where it works: values of run.env, every argument of run.command, paths of run.env_file,
+#                 paths of run.files/run.volumes, fields of services.*.
+#
+#   ${app} ${component} ${network} ${commit}     basic info of this deployment (commit is the 7-character short sha)
+#   ${service.<key>.host}                        the service's component name (reachable directly on the same network)
+#   ${service.<key>.port|user|password|database|scheme|url}
+#   ${volume.<name>.target}                      the volume's mount point inside the container
+#   ${volume.<name>.host_path}                   the volume's actual path on the host
+#   ${env.NAME}                                  an environment variable of the **watcher process**
+#                                                WARNING: shared by all targets on one watcher.
+#                                                  When several people share a watcher this means they can read
+#                                                  each other's secrets (per-namespace secret store is on the to-do list)
+#
+# WARNING: a typo **fails explicitly and lists the available keys**; it is never quietly expanded to an empty string.
+#   (If ${service.db.hst} expanded to an empty string, the symptom would be "the app starts but cannot connect".)
+# =============================================================================

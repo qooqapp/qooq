@@ -1,0 +1,6 @@
+{
+  "name": "laravel/laravel",
+  "type": "project",
+  "require": { "php": "^8.2", "laravel/framework": "^11.9" },
+  "scripts": { "post-autoload-dump": ["@php artisan package:discover"] }
+}

@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # vet + 依賴牆自檢（core/api/monitor 無 docker SDK；qooqd/CLI 無 watcher 生態；全純 Go）
+      - run: make check
+      - run: make test
+      - run: make build
+      # Windows is not supported and ships no binaries, but the code still
+      # carries build-tagged stubs for it (process_windows.go) that nothing
+      # else compiles. Without this step they rot silently and the next person
+      # who asks "could we support Windows?" starts from a build error rather
+      # than from the real obstacles.
+      #
+      # This proves compilation only. It is deliberately not a claim that qooq
+      # runs there.
+      - run: GOOS=windows GOARCH=amd64 go build ./...
+
+      # install.sh 是唯一沒有東西 import 的產物：只有實跑才測得到它壞了。
+      # 全部打本機的 stand-in server，不碰網路也不需要 docker。
+      - run: make install-test

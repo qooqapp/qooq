@@ -1,0 +1,17 @@
+FROM php:{{.php_version}}-apache
+# Laravel and most PHP frameworks serve from a subdirectory, not the repo root:
+# pointing apache at the root would expose .env and vendor/ to the internet.
+RUN sed -ri 's!/var/www/html!/var/www/html/{{.docroot}}!g' \
+      /etc/apache2/sites-available/000-default.conf /etc/apache2/apache2.conf \
+    && a2enmod rewrite
+RUN apt-get update && apt-get install -y --no-install-recommends git unzip libzip-dev libicu-dev \
+    && docker-php-ext-install {{.php_extensions}} \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=composer:{{.composer_version}} /usr/bin/composer /usr/bin/composer
+WORKDIR /var/www/html
+COPY . .
+RUN composer install {{.composer_flags}}
+# storage/ and bootstrap/cache must be writable by the server; the || true keeps
+# this working for PHP projects that are not Laravel and have neither.
+RUN chown -R www-data:www-data storage bootstrap/cache 2>/dev/null || true
+EXPOSE 80

@@ -1,0 +1,22 @@
+{{if .build_cmd}}FROM node:{{.node_version}}-alpine AS build
+WORKDIR {{.workdir}}
+{{if .corepack}}RUN corepack enable
+{{end}}COPY package*.json pnpm-lock.yaml* yarn.lock* ./
+RUN {{.install_cmd}}
+COPY . .
+RUN {{.build_cmd}}
+
+FROM node:{{.node_version}}-alpine
+WORKDIR {{.workdir}}
+COPY --from=build {{.workdir}} {{.workdir}}
+EXPOSE {{.port}}
+CMD {{.start_cmd}}
+{{else}}FROM node:{{.node_version}}-alpine
+WORKDIR {{.workdir}}
+{{if .corepack}}RUN corepack enable
+{{end}}COPY package*.json pnpm-lock.yaml* yarn.lock* ./
+RUN {{.install_cmd}}
+COPY . .
+EXPOSE {{.port}}
+CMD {{.start_cmd}}
+{{end}}

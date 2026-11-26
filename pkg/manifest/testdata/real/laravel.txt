@@ -1,0 +1,33 @@
+# Written by `qooq init` from what is in this directory.
+#
+# Edit this freely — qooq keeps your changes and will not regenerate it.
+# Field reference: docs/DEPLOY-CONFIG.md
+#
+# What was detected (php-laravel):
+#   - composer.json and artisan: a Laravel application
+#   - using the php template
+#   - its package.json is being read as an asset pipeline, not as the server
+
+version: 1
+app: laravel
+
+build:
+  template: php
+
+run:
+  ports:
+    - "auto:80"
+
+# A health check lets qooq notice when this stops answering and restart it.
+# qooq cannot tell which path your app serves — that is in the code, not the
+# files — so try these against a running instance and uncomment the one that
+# answers 200:
+#
+#   curl -i http://localhost:80/healthz
+#   curl -i http://localhost:80/health
+#   curl -i http://localhost:80/ping
+#   curl -i http://localhost:80/
+#
+# health:
+#   http: /healthz
+#   port: 80

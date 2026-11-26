@@ -1,0 +1,35 @@
+# qooq.yaml — 宣告相依服務（完整欄位見 docs/DEPLOY-CONFIG.md 的 Services 一節）
+version: 1
+app: app-with-postgres
+description: 用一行 services 宣告拿到一台 postgres 的最小範例
+
+requests:
+  cpu: 0.25
+  memory: 128Mi
+
+build:
+  template: go
+
+# 這四行就是完整宣告：image、port、資料目錄、bootstrap 環境變數、健康檢查
+# 全部由 type 帶預設值。展開後是一個名為 app-with-postgres-db 的普通 component，
+# qooq component ls/logs/stop 都適用。
+services:
+  db:
+    type: postgres
+    # version: "16"          # 預設值，通常不用寫
+    # database: myapp        # 省略＝app 的 component 名
+    # user: myapp            # 同上
+    # password: ...          # 省略＝首次自動生成並記住（換掉會讓 app 打不開自己的資料）
+    # ports: ["15432:5432"]  # 想用 psql 從 host 連才需要；預設只在 network 內可見
+
+run:
+  ports:
+    - "auto:8080"
+  env:
+    # app 自動就有 DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_DATABASE /
+    # DATABASE_URL。下面示範框架要別的變數名時怎麼自己指。
+    MYAPP_DB_DSN: "postgres://${service.db.user}:${service.db.password}@${service.db.host}:${service.db.port}/${service.db.database}?sslmode=disable"
+
+health:
+  http: /healthz
+  port: 8080

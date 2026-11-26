@@ -1,0 +1,19 @@
+FROM node:{{.node_version}}-alpine AS webbuild
+WORKDIR /web
+COPY {{.web_dir}}/package*.json ./
+RUN {{.install_cmd}}
+COPY {{.web_dir}}/ ./
+RUN {{.frontend_build_cmd}}
+
+FROM golang:{{.go_version}}-alpine AS gobuild
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+COPY --from=webbuild /web/{{.frontend_dist_dir}} ./{{.embed_dest}}
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/app {{.go_build_path}}
+
+FROM {{.base_image}}
+COPY --from=gobuild /out/app /app
+EXPOSE {{.port}}
+ENTRYPOINT ["/app"]

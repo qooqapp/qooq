@@ -1,0 +1,1666 @@
+openapi: 3.0.3
+info:
+  title: qooq-watcher API
+  version: "0.1.0"
+  description: >
+    REST API for qooq-watcher, the GitOps sidecar daemon that watches git
+    repositories and drives builds/deploys against a qooqd instance.
+
+    Auth: every /v1/targets* route and /v1/backup require a bearer token
+    (Authorization: Bearer <token>) **only when** the watcher was started
+    with an http.token / QOOQ_WATCHER_HTTP_TOKEN configured; with no token
+    configured, these routes accept unauthenticated requests (pre-M18
+    behavior). /v1/webhook/{name} never uses the bearer scheme — it is
+    authenticated per-request via its own HMAC signature scheme instead
+    (see the path description below).
+
+    Drive-by hardening (no-token mode only): when no http.token is configured,
+    /v1/targets* and /v1/backup requests must carry a Host header matching the
+    localhost forms of http.port (or an http.allowed_hosts /
+    QOOQ_WATCHER_HTTP_ALLOWED_HOSTS entry); mismatches get 403. POST /v1/targets
+    also requires Content-Type: application/json (415 otherwise), always.
+    /v1/webhook/{name} is exempt from both checks.
+servers:
+  - url: http://127.0.0.1:7778
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Constant-time compared against the watcher's configured
+        http.token / QOOQ_WATCHER_HTTP_TOKEN. Optional: if the watcher has
+        no token configured, all routes that would otherwise require this
+        scheme accept unauthenticated requests instead.
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+      example:
+        error: "target not found"
+
+    MountSpec:
+      type: object
+      description: >
+        A host path made visible inside the container. Both paths are
+        absolute.
+      properties:
+        host_path:
+          type: string
+        container_path:
+          type: string
+        read_only:
+          type: boolean
+      required: [host_path, container_path]
+
+    PortSpec:
+      type: object
+      description: One port mapping, mirrors qooqd's client.DeployRequest port entries.
+      required: [container_port]
+      properties:
+        container_port:
+          type: integer
+          description: Port inside the container/process.
+        host_port:
+          type: integer
+          description: Port published on the host. Omitted/0 means "not published".
+        protocol:
+          type: string
+          description: Transport protocol, e.g. "tcp" or "udp". Defaults to tcp when omitted.
+
+    HealthCheckSpec:
+      type: object
+      description: >
+        Liveness check configuration passed through to qooqd on deploy,
+        mirrors qooqd's ComponentSpec.HealthCheck (see qooq's internal/core/health.go).
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [http, exec]
+          description: Probe mechanism.
+        http_path:
+          type: string
+          description: Path to probe, used when type=http.
+        http_port:
+          type: integer
+          description: Host port to probe, used when type=http.
+        exec_command:
+          type: array
+          items:
+            type: string
+          description: Command + args to run inside the container, used when type=exec.
+        interval_seconds:
+          type: integer
+          description: Seconds between probes. Defaults to 10 when omitted.
+        timeout_seconds:
+          type: integer
+          description: Per-probe timeout in seconds. Defaults to 5 when omitted.
+        failure_threshold:
+          type: integer
+          description: Consecutive failures before a restart is triggered. Defaults to 3 when omitted.
+        initial_delay_seconds:
+          type: integer
+          description: Delay before the first probe. Defaults to 5 when omitted.
+
+    DeploySpecFields:
+      type: object
+      description: >
+        Shape of the deploy_spec JSON object accepted/stored by targets. Mirrors
+        qooqd's client.DeployRequest minus name/image (the pipeline fills those
+        in itself from component_name and the freshly built image tag). All
+        fields optional; a target with no deploy_spec deploys with qooqd
+        defaults.
+      properties:
+        command:
+          type: array
+          items:
+            type: string
+          description: Container entrypoint override / process argv.
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: Environment variables.
+        ports:
+          type: array
+          items:
+            $ref: '#/components/schemas/PortSpec'
+        mounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/MountSpec'
+          description: >
+            Host paths bind-mounted into the container. Operator-specified
+            mounts must use absolute host paths (a manifest's declarative
+            run.files/run.volumes are resolved by the watcher instead) and are
+            subject to the mounts.policy allowlist when one is configured.
+        namespace:
+          type: string
+          description: >
+            Namespace scoping the component name. A manifest sets this for the
+            projects it owns; an operator can set it directly here. Omitted
+            means "default".
+        network:
+          type: string
+          description: >
+            Container network the component joins. A manifest that omits it
+            gets a private per-app network ("qooq-<component>").
+        group_id:
+          type: string
+          description: qooqd group to place the component in.
+        restart_policy:
+          type: string
+          enum: [no, on-failure, always]
+          description: Defaults to "no" when omitted.
+        cpu_limit:
+          type: number
+          format: double
+          description: CPU limit in cores.
+        mem_limit_bytes:
+          type: integer
+          format: int64
+          description: Memory limit in bytes.
+        domain:
+          type: string
+          description: >
+            Public hostname the app serves (declarative metadata, passed
+            through to qooqd; overrides the manifest's top-level domain).
+        health_check:
+          $ref: '#/components/schemas/HealthCheckSpec'
+      example:
+        command: ["/app/server"]
+        env:
+          PORT: "8080"
+        ports:
+          - container_port: 8080
+            host_port: 8080
+            protocol: tcp
+        restart_policy: on-failure
+        cpu_limit: 0.5
+        mem_limit_bytes: 134217728
+
+    CreateTargetRequest:
+      type: object
+      description: >
+        Body of POST /v1/targets. Field requirements depend on deploy_mode:
+        "source" (default) requires repo_url and rejects image_ref; "image"
+        (M20a) requires image_ref and rejects
+        repo_url/branch/dockerfile/context_subdir/manifest_path; "upload"
+        rejects repo_url/branch/image_ref/auth_type/auth_credential, and its
+        name must be [A-Za-z0-9][A-Za-z0-9._-]* (it names a directory).
+      required: [name, component_name]
+      properties:
+        name:
+          type: string
+          description: Unique target name. Required, 409 on conflict.
+        deploy_mode:
+          type: string
+          enum: [source, image, upload]
+          description: >
+            "source" (default when omitted): clone repo_url and build/deploy
+            per the M12/M14/M16 pipeline. "image" (M20a): no clone/build —
+            poll image_ref's registry digest and deploy it directly when it
+            changes. "upload": the source arrives as a tar.gz on
+            PUT /v1/targets/{name}/source and is built exactly like a clone;
+            nothing is polled. Not available to stack projects.
+        repo_url:
+          type: string
+          description: >
+            Git remote URL (https:// or scp-style ssh). Required in "source"
+            mode; must be omitted in "image" mode.
+        branch:
+          type: string
+          description: >
+            Branch to watch. Defaults to "main" when omitted. "source" mode
+            only.
+        auth_type:
+          type: string
+          enum: [none, token, ssh-key]
+          description: Defaults to "none" when omitted. "source" mode only.
+        auth_credential:
+          type: string
+          description: >
+            In "source" mode: HTTPS token or PEM-encoded SSH private key,
+            depending on auth_type. In "image" mode: an optional registry
+            credential as "username:password" (no colon = username only).
+            Encrypted at rest with AES-256-GCM when the watcher has a
+            secret.key / QOOQ_WATCHER_SECRET_KEY configured, stored in
+            plaintext otherwise. Never echoed back by the API (see
+            TargetResponse.auth_credential).
+        dockerfile:
+          type: string
+          description: >
+            Repo-relative path to the Dockerfile. Must be a relative path
+            inside the repo (no absolute path or ".."); rejected with 400
+            otherwise. Defaults to "Dockerfile" when omitted.
+        context_subdir:
+          type: string
+          description: >
+            Repo-relative build context subdirectory. Must be a relative
+            path inside the repo (no absolute path or ".."); rejected with
+            400 otherwise. Defaults to the whole repo when omitted.
+        manifest_path:
+          type: string
+          description: >
+            Repo-relative path to the app manifest (qooq.yaml). Same path
+            rules as dockerfile/context_subdir, plus the sentinel "-" which
+            disables manifest parsing entirely for this target. Defaults to
+            "qooq.yaml" when omitted.
+        deploy_spec:
+          allOf:
+            - $ref: '#/components/schemas/DeploySpecFields'
+          description: >
+            Optional JSON object merged with the app manifest (if any) to
+            build the qooqd deploy request. Must be valid JSON; rejected
+            with 400 otherwise.
+        component_name:
+          type: string
+          description: >-
+            qooqd component name this target builds/deploys to. Required. At
+            most one target may deploy to a given component within a namespace;
+            a second one is rejected with 409.
+        allow_duplicate:
+          type: boolean
+          default: false
+          description: >
+            Permit deploying this component when another target already deploys
+            it from the same repo_url under a different namespace. Without it
+            that is rejected with 409: the shape is deliberate for staging
+            beside production, and a mistake when a project joined a stack
+            while its old standalone target was left in place, and nothing in
+            the data tells the two apart.
+        image_ref:
+          type: string
+          description: >
+            Registry ref to poll for digest changes (e.g.
+            "ghcr.io/acme/api:latest"). Required in "image" mode; must be
+            omitted in "source" mode.
+        poll_interval_seconds:
+          type: integer
+          description: >
+            Seconds between sweep checks. 0 (or omitted) uses the default
+            (60s); any explicit non-zero value below the floor (10s) is
+            rejected with 400.
+        webhook_secret:
+          type: string
+          description: >
+            Shared secret used to verify inbound POST /v1/webhook/{name}
+            requests (GitHub HMAC or GitLab token compare). Encrypted at
+            rest the same way as auth_credential. Optional — omitted/empty
+            means the webhook endpoint always responds 403 for this target.
+      example:
+        name: web-app
+        repo_url: https://github.com/example/web-app.git
+        branch: main
+        auth_type: token
+        auth_credential: ghp_exampletoken
+        component_name: web
+        poll_interval_seconds: 60
+        webhook_secret: whsec_example
+
+    TargetResponse:
+      type: object
+      description: >
+        API-safe view of a Target. auth_credential and webhook_secret are
+        masked to the literal string "***" when configured, and omitted
+        entirely when not configured — the real values are never returned
+        in plaintext by any endpoint.
+      required:
+        - name
+        - deploy_mode
+        - repo_url
+        - branch
+        - auth_type
+        - dockerfile
+        - manifest_path
+        - component_name
+        - poll_interval_seconds
+        - last_build_status
+        - created_at
+        - updated_at
+      properties:
+        name:
+          type: string
+        deploy_mode:
+          type: string
+          enum: [source, image, upload]
+        repo_url:
+          type: string
+        branch:
+          type: string
+        auth_type:
+          type: string
+          enum: [none, token, ssh-key]
+        auth_credential:
+          type: string
+          description: Always "***" when configured; omitted when not configured. Never plaintext.
+          enum: ["***"]
+        dockerfile:
+          type: string
+        context_subdir:
+          type: string
+        manifest_path:
+          type: string
+        component_name:
+          type: string
+        namespace:
+          type: string
+          description: >-
+            Namespace scoping component_name, derived from deploy_spec. The
+            component's identity is (namespace, name). A target that names
+            no namespace is in "default".
+        image_ref:
+          type: string
+          description: Set only in "image" deploy_mode.
+        deploy_spec:
+          allOf:
+            - $ref: '#/components/schemas/DeploySpecFields'
+        poll_interval_seconds:
+          type: integer
+        webhook_secret:
+          type: string
+          description: Always "***" when configured; omitted when not configured. Never plaintext.
+          enum: ["***"]
+        last_commit:
+          type: string
+          description: >
+            Revision of the last successful build: the commit SHA in "source"
+            mode, the upload revision in "upload" mode.
+        upload_revision:
+          type: string
+          description: >
+            "upload" mode only: revision (sha256 hex) of the most recent
+            uploaded archive. Differs from last_commit while that upload is
+            waiting to build, or when its build failed.
+        last_upload_at:
+          type: string
+          format: date-time
+          description: '"upload" mode only: when the most recent archive arrived.'
+        last_image_digest:
+          type: string
+          description: >
+            Registry digest (sha256:...) of image_ref as of the last
+            successful check/deploy. "image" mode only.
+        last_build_status:
+          type: string
+          enum: [never, building, success, failed, needs_input]
+        last_build_error:
+          type: string
+          description: >
+            Why the last attempt failed. Cleared when the next build starts, so
+            it never describes an attempt other than the one last_build_status
+            reports.
+        last_build_revision:
+          type: string
+          description: >
+            What last_build_status is about: the commit hash for a "source"
+            target, the image digest for an "image" one. Written when a build
+            starts, so status and revision always describe the same attempt.
+            Prefer this over last_commit when polling for the result of a
+            specific push - last_commit only advances on success, and so lags
+            a build that is still running.
+        build_generation:
+          type: integer
+          format: int64
+          description: >
+            Number of builds started for this target, monotonically increasing.
+            Tells "a new build began" apart from "the same one is still
+            running" when the revision is unchanged (a retry, or a forced
+            rebuild).
+        last_build_at:
+          type: string
+          format: date-time
+          nullable: true
+        build_started_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When the current or most recent build began. last_build_at is when
+            one ENDED, so while a build runs it still describes the previous
+            one — computing "elapsed" from it reports a build that started
+            seconds ago as having run for half an hour. Absent on targets that
+            have not built since this field existed, which a caller must treat
+            as unknown rather than as zero.
+        paused_reason:
+          type: string
+          description: >
+            Set when the watcher gave up on this target after too many
+            consecutive build failures, and says what to do about it. Distinct
+            from deploy_paused below: this is a breakdown, that is a decision.
+            A target that is silently no longer building is the failure this
+            mechanism would otherwise introduce.
+        deploy_paused:
+          type: boolean
+          description: >
+            Automatic deploys are switched off for this target. What is running
+            keeps running, and an explicit trigger still builds.
+        endpoints:
+          type: array
+          items:
+            type: string
+          description: >
+            Where the deployment can be reached, as reported by qooqd.
+            Best-effort: a daemon that cannot be reached leaves this and the
+            two component_ fields empty rather than failing the listing — the
+            build state is still true and still worth showing.
+        component_phase:
+          type: string
+          description: >
+            What the deployed container is doing (Running, Exited, Failed,
+            Creating). Separate from last_build_status on purpose: a build can
+            succeed and leave a container crash-looping, and reporting only the
+            build would call that a success.
+        component_error:
+          type: string
+          description: The runtime's own reason for the current phase, when it has one.
+        component_desired_state:
+          type: string
+          enum: [Running, Stopped]
+          description: >
+            What qooqd has been told to keep the component at. A container
+            stopped on purpose and one that exited by itself are both "Exited";
+            only this says which, and calling the second one stopped would hide
+            a failure behind somebody's decision.
+        component_version:
+          type: string
+          description: Tag of the running image (the short commit for a git build).
+        component_previous_version:
+          type: string
+          description: Tag a rollback would put back; absent when there is none.
+        topology:
+          type: object
+          description: >
+            What the last successful build connected: the services it started
+            and the same-namespace components it referenced through
+            ${component.<name>.<field>}. Absent for image targets and for
+            builds with neither. Service phase is read live from qooqd
+            (best-effort, like component_phase).
+          properties:
+            services:
+              type: array
+              items:
+                type: object
+                properties:
+                  name: {type: string, description: The key under services in the manifest.}
+                  component: {type: string, description: The qooqd component it is deployed as.}
+                  type: {type: string, description: postgres, redis, ...}
+                  version: {type: string}
+                  phase: {type: string}
+            references:
+              type: array
+              items: {type: string}
+        next_check_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the sweep loop will next check this target for changes.
+        stack_name:
+          type: string
+          description: >
+            Set when this target is one project of a stack. Such a target is not
+            swept on its own schedule — the stack deploys it in the order its
+            manifest declares.
+        project_name:
+          type: string
+          description: This target's project name within its stack.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      example:
+        name: web-app
+        deploy_mode: source
+        repo_url: https://github.com/example/web-app.git
+        branch: main
+        auth_type: token
+        auth_credential: "***"
+        dockerfile: Dockerfile
+        manifest_path: qooq.yaml
+        component_name: web
+        poll_interval_seconds: 60
+        last_commit: 1a2b3c4
+        last_build_status: success
+        last_build_revision: 1a2b3c4
+        build_generation: 7
+        created_at: "2026-07-01T00:00:00Z"
+        updated_at: "2026-07-01T00:05:00Z"
+
+    CreateStackRequest:
+      type: object
+      description: Body of POST /v1/stacks.
+      required: [name, repo_url]
+      properties:
+        name:
+          type: string
+          description: >
+            Lowercase DNS label. It becomes the namespace, the network
+            (qooq-<name>) and the container name prefix for every project, so the
+            manifest's own stack: field must match it. "default" is reserved:
+            it is the namespace components land in when they name none.
+        repo_url:
+          type: string
+          description: The repository holding qooq.stack.yaml.
+        branch:
+          type: string
+          default: main
+        auth_type:
+          type: string
+          enum: [none, token, ssh-key]
+        auth_credential:
+          type: string
+          description: >
+            Token or PEM-encoded SSH key for the manifest's repository. It is
+            never forwarded to a project's external repo:, which would hand this
+            credential to a third-party host.
+        manifest_path:
+          type: string
+          default: qooq.stack.yaml
+        poll_interval_seconds:
+          type: integer
+        allow_duplicate:
+          type: boolean
+          default: false
+          description: >
+            Passed to every project target this stack creates. See
+            CreateTargetRequest.allow_duplicate. Without it, a project whose
+            repository is already deployed by a standalone target makes the
+            stack's sync fail with that target named in last_error.
+
+    StackResponse:
+      type: object
+      description: >
+        API-safe view of a stack. auth_credential is masked to "***" when
+        configured. projects is filled in by GET /v1/stacks/{name} only.
+      required: [name, repo_url, branch, auth_type, manifest_path, poll_interval_seconds, status, created_at, updated_at]
+      properties:
+        name: {type: string}
+        repo_url: {type: string}
+        branch: {type: string}
+        auth_type: {type: string, enum: [none, token, ssh-key]}
+        auth_credential:
+          type: string
+          description: Always "***" when configured; omitted when not. Never plaintext.
+          enum: ["***"]
+        manifest_path: {type: string}
+        last_manifest_commit: {type: string}
+        poll_interval_seconds: {type: integer}
+        status:
+          type: string
+          enum: [never, success, degraded, failed, paused]
+          description: >
+            degraded means some projects deployed and others did not, so the stack
+            is running a mix of versions — inherent to converging deployment.
+            paused means a project hit policy.max_failures: nothing is deployed
+            until resume, though everything already running keeps running.
+        last_error:
+          type: string
+          description: A summary of what failed or was skipped; each project's full error is on its own target.
+        paused_reason: {type: string}
+        last_sync_at: {type: string, format: date-time, nullable: true}
+        next_check_at: {type: string, format: date-time, nullable: true}
+        projects:
+          type: array
+          items: {$ref: '#/components/schemas/StackProjectResponse'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    StackProjectResponse:
+      type: object
+      required: [name, source, target_name, last_build_status]
+      properties:
+        name:
+          type: string
+          description: The project's short name — also its DNS alias inside the stack's network.
+        source:
+          type: string
+          description: The project's repo URL, or "<manifest repo> (<subdir>)" for a project taken from a subdirectory.
+        depends_on:
+          type: array
+          items: {type: string}
+          description: What this project waits for; "name (started)" when it only waits for the deploy to return.
+        target_name: {type: string}
+        last_commit: {type: string}
+        last_build_status:
+          type: string
+          enum: [never, building, success, failed]
+        last_build_error: {type: string}
+        consecutive_failures:
+          type: integer
+          description: Failures since the last success, counted against policy.max_failures.
+        orphaned:
+          type: boolean
+          description: >
+            Still deployed but no longer in the manifest. qooq never removes one
+            on its own — it may be holding data.
+
+    UpdateTargetRequest:
+      type: object
+      description: Body of PUT /v1/targets/{name}. At least one of branch, auth_type and domain.
+      properties:
+        branch:
+          type: string
+          description: Branch name (resolved as refs/heads/<branch>).
+        auth_type:
+          type: string
+          enum: [github-app]
+          description: >-
+            Moves a target from auth_type none to github-app — the only auth
+            change allowed after creation (needs control.addr; refused for
+            stack-owned, image-mode and credential-carrying targets).
+        domain:
+          type: string
+          description: >-
+            Hostname assigned to the target, written to deploy_spec.domain
+            (nothing else in the deploy_spec changes) and rebuilt right away.
+            Letters, digits and '-' in labels of at most 63 characters, 253 in
+            all; the empty string clears it. Refused for stack-owned targets.
+      example:
+        branch: feat/new-login
+    DeployTargetRequest:
+      type: object
+      description: Body of POST /v1/targets/{name}/deploy (M20b).
+      required: [image]
+      properties:
+        image:
+          type: string
+          description: Image ref to pull and deploy right now.
+      example:
+        image: ghcr.io/acme/api:1.2.3
+
+paths:
+  /v1/targets:
+    post:
+      summary: Create a GitOps watch target
+      description: >
+        Validates name/repo_url/component_name presence, path-safety of
+        dockerfile/context_subdir/manifest_path (must be relative, no ".."),
+        deploy_spec JSON validity, and poll_interval_seconds floor.
+        auth_credential/webhook_secret are encrypted at rest when the
+        watcher has a secret key configured.
+      operationId: createTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTargetRequest'
+      responses:
+        '201':
+          description: Target created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetResponse'
+        '400':
+          description: >
+            Validation failure: missing required field, unsafe
+            dockerfile/context_subdir/manifest_path, invalid deploy_spec
+            JSON, or poll_interval_seconds below the 10s floor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A target with this name already exists, or another target already
+            deploys to the same component (a component has exactly one owner).
+
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Content-Type must be application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error (e.g. credential encryption or storage failure).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: List all GitOps watch targets
+      operationId: listTargets
+      responses:
+        '200':
+          description: All watch targets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TargetResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/targets/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Target name.
+    get:
+      summary: Get a GitOps watch target by name
+      operationId: getTarget
+      responses:
+        '200':
+          description: The target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Change an existing target (branch only)
+      description: |
+        Switches a source-mode target to another branch and rebuilds it from that
+        branch's HEAD on the next sweep tick (force_rebuild + trigger). The
+        component is kept. Same-branch requests are a no-op. Also resumes a target
+        paused after repeated build failures. Takes the per-target lock, so it
+        waits for an in-flight build of the old branch to finish first.
+        last_commit is left as is (it names the previous image kept for rollback).
+        Branch names only — not tags, not refs/... paths.
+      operationId: updateTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTargetRequest'
+      responses:
+        '200':
+          description: The updated target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetResponse'
+        '400':
+          description: Invalid branch name or domain, nothing to change, or an image-mode target (it has no branch).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The target belongs to a stack; change the branch in the stack manifest.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Delete a watch target and the deployment it made
+      description: |
+        Removes the target's component from qooqd first, then the target row.
+
+        The component used to be left behind, which left a container running
+        and an address answering with nothing watching or listing it — the
+        deployment nobody wanted was also the one nobody could find again.
+        The order matters: if the daemon cannot be reached the row survives,
+        so the target is still listed and the removal can be retried.
+
+        Images built for it are NOT removed (they are shared with the rollback
+        path and with anything else tagged from the same repo).
+      operationId: deleteTarget
+      parameters:
+        - name: keep_component
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['1']
+          description: >
+            "1" deletes only the target, leaving the deployment running. For
+            handing a deployment over to something else (a stack, another
+            watcher) without taking it down.
+      responses:
+        '204':
+          description: Deleted.
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: >
+            The component could not be removed (qooqd unreachable or refusing).
+            The target is left in place so the removal can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/targets/{name}/rollback:
+    post:
+      summary: Put the previous version back
+      description: |
+        Swaps the component's image for the one it ran before (qooqd's
+        rollback, so a second call goes forward again). The target is not
+        changed: polling sees no new commit, so the rollback stays until the
+        next push or an explicit deploy.
+      operationId: rollbackTarget
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Target name.
+      responses:
+        '204':
+          description: Rolled back.
+        '404':
+          description: Target not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Nothing deployed, or no earlier version to go back to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '423':
+          description: A deploy is in progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/targets/{name}/stop:
+    post:
+      summary: Stop the deployment, keeping everything else
+      description: |
+        Stops the target's component. The target, its settings, its images and
+        any volumes stay exactly where they are; what stops is the process
+        answering at the address.
+
+        This is NOT the same as pausing. A stopped target that is still being
+        watched comes back up the next time the repository moves, because a
+        deploy starts what it deploys. To stop it staying stopped, pause as
+        well.
+      operationId: stopTarget
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Target name.
+      responses:
+        '204':
+          description: Stopped.
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >
+            The target has nothing deployed yet. Not a 404: the target exists,
+            and 404 would read as "no such project" to a caller that just
+            listed it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: qooqd refused or could not be reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: This watcher has no qooqd configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/targets/{name}/start:
+    post:
+      summary: Start a stopped deployment
+      description: >
+        Starts the target's component again, from the image of the last
+        successful deploy. Nothing is rebuilt.
+      operationId: startTarget
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Target name.
+      responses:
+        '204':
+          description: Started.
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The target has nothing deployed yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: qooqd refused or could not be reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: This watcher has no qooqd configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/targets/{name}/pause:
+    post:
+      summary: Stop deploying this target automatically
+      description: |
+        Sets deploy_paused, which takes the target out of the sweep. What is
+        running keeps running and keeps serving; only the automatic "the
+        remote moved, build it" path stops.
+
+        An explicit trigger still builds it (POST .../trigger?force=1). A pause
+        that swallowed a deliberate deploy would make the deploy button do
+        nothing on exactly the projects somebody is most likely to be fixing.
+
+        Separate from paused_reason, which is the watcher giving up after
+        repeated build failures. One is a decision and the other is a
+        breakdown; reporting them as one state tells each of them the other's
+        story.
+      operationId: pauseTarget
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Target name.
+      responses:
+        '204':
+          description: Paused.
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/targets/{name}/resume:
+    post:
+      summary: Resume automatic deploys
+      description: >
+        Clears deploy_paused and sets the next check to now, because the reason
+        somebody resumes is that they want what was pushed while it was paused
+        — waiting out the poll interval looks like the resume did not work.
+      operationId: resumeTarget
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Target name.
+      responses:
+        '204':
+          description: Resumed; it will be checked on the next sweep tick.
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/targets/{name}/trigger:
+    post:
+      summary: Force an immediate check of a target
+      description: >
+        Sets the target's next-check time to now, so the sweep loop
+        (10s tick) picks it up on its next iteration regardless of
+        poll_interval_seconds. Does not itself wait for the check to
+        complete — this is a fire-and-forget "poke".
+      operationId: triggerTarget
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Target name.
+      responses:
+        '202':
+          description: Accepted; the target will be checked on the next sweep tick.
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/targets/{name}/deploy:
+    post:
+      summary: Deploy a specific image to a target right now (M20b)
+      description: >
+        Bypasses the poll/build pipeline entirely (git polling for "source"
+        targets, digest polling for "image" targets) and deploys image
+        immediately via qooqd — intended for a CI pipeline that just built
+        and pushed an image to call directly. Pulls image first (registry
+        credentials from the target's auth_credential when deploy_mode is
+        "image"; anonymous otherwise); a pull failure only warns and
+        continues (the image may already be present locally). For "image"
+        mode targets, best-effort resolves and records image's registry
+        digest as last_image_digest afterward, so the next sweep tick does
+        not immediately "detect" the very image this call just deployed.
+      operationId: deployTarget
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Target name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployTargetRequest'
+      responses:
+        '200':
+          description: Deployed; returns the target's updated state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetResponse'
+        '400':
+          description: Missing image.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: qooqd upsert failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/targets/{name}/manifest:
+    get:
+      summary: Show the manifest qooq generated for a repo that has none
+      description: >
+        Repos with no qooq.yaml of their own get one generated on their first
+        build, from what is on disk (see detect.go). Returns 404 when the repo
+        has its own manifest or has not been built yet.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: The generated manifest, as YAML.
+          content:
+            application/yaml:
+              schema: {type: string}
+        '404': {description: No generated manifest for this target.}
+    put:
+      summary: Replace the generated manifest
+      description: >
+        The correction path for a wrong guess. The body is validated before it
+        is stored, generation never runs again once something is stored, and
+        the target rebuilds immediately — a correction that needed an unrelated
+        commit to take effect would be no correction at all.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema: {type: string}
+      responses:
+        '200':
+          description: Stored; a rebuild has been scheduled.
+          content:
+            application/yaml:
+              schema: {type: string}
+        '400': {description: The manifest does not parse.}
+        '404': {description: No such target.}
+
+  /v1/targets/{name}/source:
+    put:
+      summary: Upload the source of an "upload" target and queue a build
+      description: >
+        The body is a gzip'd tar of the source tree (not JSON). It is checked
+        with the same extraction rules the build uses — only regular files,
+        directories and symlinks that stay inside the tree; no absolute paths,
+        no "..", no hard links or devices; at most 100 MiB compressed,
+        500 MiB unpacked and 50,000 entries — and refused whole if any rule
+        fails. The revision is the sha256 of the normalized contents (sorted
+        paths, file contents, execute bit; mtime/owner/other mode bits are
+        ignored), so the same files uploaded again build nothing unless
+        ?force=1. The two most recent archives per target are kept.
+        If a build of this target is running, the response waits for it.
+      operationId: uploadTargetSource
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: {type: string}
+        - name: force
+          in: query
+          required: false
+          schema: {type: string, enum: ["1"]}
+          description: Build even when the archive matches what is deployed.
+      requestBody:
+        required: true
+        content:
+          application/gzip:
+            schema: {type: string, format: binary}
+      responses:
+        '202':
+          description: >
+            Stored. build_generation is the baseline (wait for a generation
+            above it); build_queued is false when nothing will be built.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision, build_generation, build_queued]
+                properties:
+                  revision: {type: string}
+                  build_generation: {type: integer}
+                  build_queued: {type: boolean}
+        '400':
+          description: Not a gzip'd tar, or an entry the rules refuse.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The target's deploy_mode is not "upload".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Over a size or entry-count limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Content-Type is set and is not application/gzip.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/stacks:
+    post:
+      summary: Add a stack (one deployed instance of a manifest)
+      description: >
+        A stack is several projects deployed together, in the order
+        qooq.stack.yaml declares, into a namespace and network named after the
+        stack. Each project of the manifest becomes an ordinary target owned by this
+        stack; those targets are not swept on their own schedule, because the
+        stack deploys them in dependency order.
+      operationId: createStack
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStackRequest'
+      responses:
+        '201':
+          description: Created. The first sweep tick cooks it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StackResponse'
+        '400':
+          description: Invalid name (must be a DNS label), missing repo_url, or a bad manifest_path.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '409':
+          description: A stack with this name already exists.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+    get:
+      summary: List stacks
+      operationId: listStacks
+      responses:
+        '200':
+          description: All stacks, without their projects (GET one stack for those).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/StackResponse'}
+
+  /v1/stacks/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      summary: Get one stack, with its projects expanded
+      operationId: getStack
+      responses:
+        '200':
+          description: The stack, including per-project build status and any orphaned projects.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StackResponse'}
+        '404': {description: No such stack.}
+    delete:
+      summary: Remove a stack
+      description: >
+        Deletes the stack and the watch targets for its projects. The deployed
+        components keep running unless prune=true — forgetting how something is
+        built is not the same decision as tearing it down. Even with prune,
+        service containers and volumes are never removed.
+      operationId: deleteStack
+      parameters:
+        - name: prune
+          in: query
+          required: false
+          schema: {type: boolean}
+          description: Also remove the project components from qooqd.
+      responses:
+        '204': {description: Removed.}
+        '404': {description: No such stack.}
+        '502':
+          description: qooqd could not be reached to remove a component (prune only).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /v1/stacks/{name}/manifest:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      summary: The manifest the watcher is working from
+      description: >
+        The last manifest that parsed — not necessarily what is on the branch
+        right now, since a manifest that fails to parse leaves the previous one
+        in force.
+      operationId: getStackManifest
+      responses:
+        '200':
+          description: The manifest text.
+          content:
+            application/yaml:
+              schema: {type: string}
+        '404': {description: No such stack, or no manifest fetched yet.}
+
+  /v1/stacks/{name}/trigger:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      summary: Cook this stack on the next sweep tick
+      operationId: triggerStack
+      responses:
+        '202': {description: Scheduled.}
+        '404': {description: No such stack.}
+
+  /v1/stacks/{name}/resume:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      summary: Lift a pause
+      description: >
+        A stack pauses when one project fails policy.max_failures times in a row:
+        deployment stops for every project (containers keep running) so the
+        version gap between the broken project and its healthy siblings stops
+        widening. Resume clears every project's failure count and cooks the stack
+        again.
+      operationId: resumeStack
+      responses:
+        '200':
+          description: Resumed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StackResponse'}
+        '404': {description: No such stack.}
+
+  /v1/backup:
+    get:
+      summary: Download a consistent snapshot of the watcher's sqlite database
+      description: >
+        Uses sqlite's VACUUM INTO to produce a point-in-time, self-contained
+        snapshot, streams it, then deletes the temp file. The snapshot
+        contains auth_credential/webhook_secret exactly as stored (encrypted
+        if a secret key is configured, plaintext otherwise) — unlike
+        TargetResponse, backups are NOT masked, since a backup must be
+        faithfully restorable. Protect the downloaded file accordingly.
+      operationId: backup
+      responses:
+        '200':
+          description: sqlite database snapshot.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error (temp dir/file creation or VACUUM INTO failure).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/webhook/{name}:
+    post:
+      summary: GitHub/GitLab webhook receiver (poke model)
+      description: >
+        Exempt from bearer auth by design — external git hosts have no way
+        to attach a bearer token, so this endpoint authenticates each
+        request via its own signature instead. Provide exactly one of:
+
+          * `X-Hub-Signature-256: sha256=<hex>` — GitHub style, HMAC-SHA256
+            over the raw request body using the target's webhook_secret as
+            key.
+          * `X-Gitlab-Token: <token>` — GitLab style, constant-time compared
+            directly against the target's webhook_secret.
+
+        The request body is never parsed or trusted as data — a valid
+        signature simply triggers the same "check now" action as
+        POST /v1/targets/{name}/trigger (the payload content is irrelevant;
+        any JSON, or no body at all, is accepted as long as it is under the
+        1MB body-size cap).
+      operationId: webhook
+      security: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Target name.
+        - name: X-Hub-Signature-256
+          in: header
+          required: false
+          schema:
+            type: string
+          description: 'GitHub-style signature: "sha256=<hex hmac>". Mutually exclusive with X-Gitlab-Token; provide one or the other.'
+        - name: X-Gitlab-Token
+          in: header
+          required: false
+          schema:
+            type: string
+          description: 'GitLab-style shared token, compared directly against webhook_secret. Mutually exclusive with X-Hub-Signature-256.'
+      requestBody:
+        required: false
+        description: Arbitrary JSON payload. Content is never parsed or trusted; only the signature headers are checked.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Signature verified; target will be checked on the next sweep tick.
+        '400':
+          description: Body could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: >
+            Signature header missing entirely (secret configured but
+            neither header sent), or present but does not match.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Target has no webhook_secret configured — webhook disabled for this target regardless of headers sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No target with this name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the 1MB cap.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error (e.g. webhook_secret decryption failure after a secret.key rotation).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /healthz:
+    get:
+      summary: Liveness check
+      description: >
+        Registered by the shared healthcheck_apis fx module (not
+        internal/watcher), exempt from bearer auth. Included here for
+        completeness since it is documented as part of operating
+        qooq-watcher.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          description: Watcher process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                example:
+                  status: ok

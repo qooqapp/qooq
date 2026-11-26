@@ -1,0 +1,41 @@
+kind: go
+
+notes:
+  - go.mod at the repo root, using the go template
+  - go.mod requires go 1.25, pinning the build image to it
+
+rendered qooq.yaml:
+  # generated
+  #
+  # Edit this freely — qooq keeps your changes and will not regenerate it.
+  # Field reference: docs/DEPLOY-CONFIG.md
+  #
+  # What was detected (go):
+  #   - go.mod at the repo root, using the go template
+  #   - go.mod requires go 1.25, pinning the build image to it
+  
+  version: 1
+  app: go-monorepo
+  
+  build:
+    template: go
+    template_vars:
+      go_version: "1.25"
+  
+  run:
+    ports:
+      - "auto:8080"
+  
+  # A health check lets qooq notice when this stops answering and restart it.
+  # qooq cannot tell which path your app serves — that is in the code, not the
+  # files — so try these against a running instance and uncomment the one that
+  # answers 200:
+  #
+  #   curl -i http://localhost:8080/healthz
+  #   curl -i http://localhost:8080/health
+  #   curl -i http://localhost:8080/ping
+  #   curl -i http://localhost:8080/
+  #
+  # health:
+  #   http: /healthz
+  #   port: 8080

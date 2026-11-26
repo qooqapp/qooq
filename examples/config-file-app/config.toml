@@ -1,0 +1,10 @@
+# Settings this app reads from its working directory at startup. qooq mounts
+# it read-only via run.files, so changing it and pushing redeploys the app
+# with the new value — no image rebuild involved.
+greeting = "hello from config.toml"
+
+# Where the app writes. Must match the run.volumes target in qooq.yaml, or the
+# data lands inside the container and disappears on the next deploy.
+data_dir = "/app/data"
+
+port = "8080"

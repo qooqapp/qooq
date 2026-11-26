@@ -1,0 +1,13 @@
+# e2e 疊加層：把本機的 demo bare repo（../qooq-demo.git，建法見 docs/WALKTHROUGH.md 第三關）
+# 掛進 watcher 容器，讓 GitOps 全鏈（push→build→deploy）能在 compose 裡驗。
+#
+#   QOOQ_TOKEN=e2e QOOQ_WATCHER_SECRET_KEY=e2e \
+#     docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build --wait
+#   bin/qooq --token e2e watch add --name demo --repo file:///repos/qooq-demo.git --component demo-web
+#   （在 ../qooq-demo push 一個 commit，≤10s 後 watcher 會 build + 部署）
+#   驗收：curl http://127.0.0.1:8080 應回 demo 頁面
+#   收攤：docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v
+services:
+  qooq-watcher:
+    volumes:
+      - ../qooq-demo.git:/repos/qooq-demo.git:ro

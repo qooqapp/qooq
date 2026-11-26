@@ -1,0 +1,51 @@
+# local daemon state
+# The -wal/-shm sidecars are NOT matched by *.db, and sqlite writes all three:
+# a watcher started without QOOQ_WATCHER_SQLITE_PATH puts its database in the
+# current directory, so running one from a checkout drops the set here.
+*.db
+*.db-wal
+*.db-shm
+
+# compose secrets (QOOQ_TOKEN etc.) — never commit
+# The patterns are deliberately wider than `.env`: a timestamped backup of a
+# filled-in env file holds the same live secrets the original does, and a bare
+# `.env` rule does not cover it. Example files are the one thing that is meant
+# to be committed, so they are excepted by name.
+.env
+.env.*
+*.env
+!*.env.example
+
+# watcher / daemon config written by hand on a machine — these hold qooqd.token,
+# secret.key and git credentials, so they are the same class of thing as .env.
+# Anchored to the paths the watcher actually reads (./config.* and
+# ./configs/config.*): an unanchored `config.toml` also matches
+# examples/config-file-app/config.toml, and then a new example carrying one is
+# silently skipped by `git add -A`.
+/config.toml
+/config.yaml
+/config.yml
+/configs/config.*
+
+# private keys (GitHub App, SSH). Never needed in a checkout: pkg/buildctx.TarDir
+# only excludes .git, so a key left here also travels into a docker build context.
+*.pem
+
+# built binaries
+/qooq
+/qooqd
+/bin/
+
+# editor/OS noise
+.DS_Store
+
+# goreleaser 產物
+dist/
+
+# 本機測試用的破壞性腳本
+/scratch/
+.shapes-cache/
+
+# AI 開發筆記（給 Claude Code 等 agent 讀的本機檔，不進公開 repo）
+CLAUDE.md
+.claude/

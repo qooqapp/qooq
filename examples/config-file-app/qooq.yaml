@@ -1,0 +1,32 @@
+# qooq.yaml — 設定檔注入 + 資料持久化範例（完整欄位見 docs/DEPLOY-CONFIG.md）
+version: 1
+app: config-file-app
+description: 從 cwd 讀 config.toml、把資料寫進 volume 的最小範例
+
+requests:
+  cpu: 0.25
+  memory: 128Mi
+
+build:
+  template: go
+  template_vars:
+    # 模板最終階段的 WORKDIR 就是 /app（預設值），所以掛在 /app/config.toml
+    # 的檔案正好落在 app 的工作目錄裡——app 讀的是相對路徑 "config.toml"。
+    workdir: /app
+
+run:
+  ports:
+    - "auto:8080"
+
+  files:
+    # 設定：跟著 commit 版本化、預設唯讀。改 config.toml 再 push 就會重新部署，
+    # 還在跑的舊容器不會在換版前突然讀到新內容。
+    - "./config.toml:/app/config.toml"
+
+  volumes:
+    # 資料：讀寫、永不隨部署清除。無斜線的純名稱＝watcher 管理的具名 volume。
+    - "appdata:/app/data"
+
+health:
+  http: /healthz
+  port: 8080

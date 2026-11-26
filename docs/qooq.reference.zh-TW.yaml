@@ -1,0 +1,291 @@
+# =============================================================================
+# qooq.yaml — 完整欄位參考（version 1）
+# =============================================================================
+#
+# 這份檔案列出**所有**可用欄位與它們的預設值，當作查閱用；不是拿來複製整份的。
+# 實際的 qooq.yaml 只要寫「跟預設值不同」的部分就好——多數專案 10 行以內。
+#
+#   最小可用的 qooq.yaml：
+#     version: 1
+#     app: my-app
+#     build: {template: go}
+#     run: {ports: ["8080:8080"]}
+#
+# 可跑的範例在 ../examples/；散文版說明在 DEPLOY-CONFIG.md。
+# 標 [M23] 的是 2026-07 新增的欄位。
+# =============================================================================
+
+version: 1                      # 必填，目前只支援 1
+app: my-app                     # app 名稱，純說明用（不影響部署）
+description: 一句話說明          # 純 metadata
+
+# 對外服務的網域。qooqd 開 -ingress（qooq up 預設開）時會實際路由到這個 app；
+# 沒開就只是 metadata，在 component get 顯示。
+domain: app.example.com
+
+# ---------------------------------------------------------------------------
+# network [M23] — 這個 app 加入哪張容器網路
+# ---------------------------------------------------------------------------
+# 省略 = 專屬網路 `qooq-<component名>`，只有這個 app 與它宣告的 services 在裡面。
+# 填一個共用名稱 = 加入該網路，同網路的 component 之間可以用 **component 名稱**
+# 互打（例：http://my-api:8080），位址不隨重新部署改變（容器 IP 會變，名稱不會）。
+#
+# 這是**多個獨立專案互連的唯一設定點**：每個專案的 qooq.yaml 各寫一次同樣的名字。
+network: my-stack
+
+# ---------------------------------------------------------------------------
+# services [M23] — 這個 app 需要的相依容器（資料庫、快取）
+# ---------------------------------------------------------------------------
+# 省略 = 沒有相依服務。
+# 每個項目展開成一個**普通 component**，名稱 `<component名>-<key>`（下例：my-app-db），
+# 跟 app 同一張 network、同一個 group。qooq component ls/get/logs/stop/rollback 全部適用。
+#
+# qooq 會**先把服務起好、確認 ready，才部署 app**（最多等 3 分鐘）。
+services:
+  db:                           # key 決定 component 後綴與環境變數前綴（db → DB_*）
+    type: postgres              # postgres | mysql | mariadb | redis | mongo | custom
+                                # custom 必須自己給 image 與 port
+
+    # --- 以下全部可省略：type 已經帶了一整套預設 ---
+    version: "16"               # 套進 type 的 image 樣板（postgres:16-alpine）
+    database: my_app            # 預設 = component 名（小寫、非英數轉底線）
+    user: my_app                # 預設同上
+    password: ${env.DB_PASSWORD}
+                                # 省略 = 首次自動生成 32 字元密碼並**永久記住**
+                                # （存在 target 上，設了 secret.key 就加密）。
+                                # ⚠ 密碼在 DB 初始化時就寫進資料目錄，之後換掉會讓
+                                #   app 打不開自己的資料，症狀是 auth failed 且極難查。
+
+    storage:
+      volume: my-app-db-data    # 預設 `<component名>-<key>-data`
+      path: /var/lib/postgresql/data   # 預設由 type 決定
+      size: 10Gi                # 只記錄，v1 不強制
+
+    image: postgres:16-alpine   # 給了就整個蓋掉 type 推導的 image
+    port: 5432                  # 預設由 type 決定
+    env:                        # 疊在 type 的 bootstrap 變數之上
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports: []                   # 對 host 發布，例 ["15432:5432"]。
+                                # **預設不發布**：服務只在 network 內看得到。
+    health: {}                  # 覆蓋 type 內建的健康檢查（欄位同下方 health:）
+
+    # 叢集用，v1 只接受這兩個值，其他值會明確報「尚未支援」（不會安靜地只跑一份）
+    replicas: 1
+    mode: single                # single | replica | cluster（後兩者尚未實作）
+
+# app 自動拿到的環境變數（<KEY> = 服務 key 大寫，db → DB）：
+#   DB_HOST=my-app-db  DB_PORT=5432  DB_USER=my_app  DB_PASSWORD=…
+#   DB_DATABASE=my_app  DB_SCHEME=postgres  DB_URL=postgres://…
+#   DATABASE_URL=postgres://…      ← 服務 key 叫 db 時額外給這個慣例名
+# 框架要別的變數名時，用下方 run.env 搭配 ${service.db.*} 自己指。
+
+# ---------------------------------------------------------------------------
+# build — 怎麼把 repo 變成可以跑的東西
+# ---------------------------------------------------------------------------
+# 省略整塊 = 用 repo 根目錄的 Dockerfile。
+build:
+  dockerfile: docker/Dockerfile  # Dockerfile 位置（預設 `Dockerfile`）。
+                                 # **專案自帶 Dockerfile 時優先用它**，別套模板。
+                                 # 與 template 互斥。
+  context: .                     # build context 子目錄，預設 repo 根（monorepo 用）
+
+  # template 與 dockerfile 二擇一：指定內建模板，repo 可以完全不放 Dockerfile。
+  # template: go
+  # template_vars:               # 只覆蓋跟預設不同的部分
+  #   # --- go 模板 ---
+  #   go_version: "1.25"         # 要 ≥ go.mod 宣告的版本，否則 build 失敗
+  #   build_path: "."
+  #   base_image: alpine:3.20
+  #   port: "8080"
+  #   cgo: "0"                   # [M23] 用到 mattn/go-sqlite3 等 cgo 依賴時設 "1"，
+  #                              # 否則**編譯得過、跑起來才炸**（requires cgo to work）
+  #   build_deps: gcc musl-dev   # [M23] build 階段 apk 套件（cgo 需要）
+  #   runtime_deps: ""           # [M23] 最終 image 的 apk 套件
+  #   extra_copy: config.toml    # [M23] 額外複製進最終 image 的檔案（空白分隔）
+  #   workdir: /app              # [M23] 最終 image 的 WORKDIR（binary 放這裡）
+  #   # --- node 模板 ---
+  #   node_version: "20"
+  #   install_cmd: npm install --omit=dev
+  #   build_cmd: ""              # [M23] 非空就切成 build → runtime 兩階段。
+  #                              # Nuxt/Next/Vite 這類有編譯步驟的一定要設
+  #   start_cmd: node index.js
+  #   corepack: ""               # [M23] 設 "true" 啟用 pnpm/yarn
+  #   # --- 其他模板見 DEPLOY-CONFIG.md ---
+
+  # process runtime 專用（requests.runtime: process 時才有作用）
+  # command: ["go", "build", "-o", "bin/app", "."]   # 在 clone 目錄跑的建置指令
+  # artifact: bin/app                                # 建置產物（可執行檔）位置
+
+# ---------------------------------------------------------------------------
+# run — 怎麼跑起來
+# ---------------------------------------------------------------------------
+run:
+  command: []                   # 覆蓋 image 的啟動指令（process 模式為 argv）
+
+  # --- 環境變數 ---------------------------------------------------------
+  # 優先序（低 → 高）：services 自動注入 → env_file（依序）→ env → operator 的
+  # deploy_spec.env。也就是：你在這裡寫的一定蓋得過 services 注入的與檔案裡的。
+
+  env_file:                     # [M23] dotenv 檔清單，依序載入（後面蓋前面）
+    - .env.defaults             #   repo 相對路徑：跟程式碼一起進版控
+    - /etc/my-app/secrets.env   #   host 絕對路徑：secret 不進 repo
+    - "appdata:/config/app.env" #   具名 volume 內的檔案（volume名:volume內路徑）
+    # 格式：KEY=VALUE 一行一個，`#` 註解、空行、`export ` 前綴、成對引號都吃。
+    # ⚠ 檔案**內容不做插值**：裡面寫 ${...} 會原樣傳給 app。
+
+  env:                          # 直接指定的環境變數（值支援 ${...} 插值）
+    LOG_LEVEL: info
+    # 用服務的連線資訊組出框架期待的變數名：
+    MYAPP_DATABASE_HOST: "${service.db.host}"
+    MYAPP_DATABASE_PORT: "${service.db.port}"
+    MYAPP_DATABASE_PASSWORD: "${service.db.password}"
+    # 引用 watcher 進程的環境變數（讓 secret 不必進 repo）：
+    STRIPE_KEY: "${env.STRIPE_KEY}"
+    # 跨專案互連：同 network 用對方的 component 名（不是 127.0.0.1）
+    API_BASE_INTERNAL: http://my-api:8080
+
+  # --- port ------------------------------------------------------------
+  ports:
+    - "8080:8080"               # "host:container"
+    - "8081"                    # 裸 container port（不對 host 發布）
+    # process runtime 下無作用（只 log 一行提示）
+
+  # --- files [M23]：設定檔注入（預設唯讀）-------------------------------
+  # 短字串與長物件兩種寫法都吃，來源形式由字串本身判斷：
+  #
+  #   相對路徑（./x、config/x）  → repo 內容，build 後複製出來，**按 commit 版本化**
+  #   絕對路徑（/etc/x）        → host 上既有的檔案／目錄，直接掛
+  #   無斜線的純名稱（appdata）  → 具名 volume（watcher 管理的目錄）
+  #
+  # ⚠ `config.toml` 這種**有點號的名字算路徑不算 volume 名**。要指 repo 根的檔案，
+  #   寫 `./config.toml` 最不會有歧義。
+  files:
+    - "./config.toml:/app/config.toml"        # 短字串：src:dst[:ro|rw]
+    - from: config/app.yaml                   # 等價長物件（要加註解時比較好讀）
+      to: /app/config/app.yaml
+      mode: ro                                # ro（files 的預設）| rw
+    - "/etc/my-app/license.key:/app/license.key"
+
+  # 為什麼 files 預設唯讀：容器內若是 root，可寫的掛載會在 host 留下 root 所有的
+  # 檔案，之後 watcher 清不掉、磁碟慢慢積滿。要寫入的東西一律放 volumes。
+  #
+  # 為什麼按 commit 版本化：bind mount 是活的。就地覆寫會讓**還在跑的舊容器**立刻
+  # 讀到新設定，而且 rollback 之後會拿到新版設定。版本化之後只留最新兩份
+  # （current + previous，對齊 rollback 語意）。
+
+  # --- volumes [M23]：資料持久化（預設讀寫、永不清除）-------------------
+  volumes:
+    - "appdata:/app/data"                     # 具名 volume（推薦）
+    - "/srv/my-app/uploads:/app/uploads"      # 直接指定 host 目錄
+    - from: cache                             # 長物件寫法
+      to: /app/cache
+      mode: rw
+
+  # 具名 volume 落在 `<mounts.dir>/<component>/volumes/<name>`，
+  # **永遠不會被清理**——刪掉 target 也不會刪它。要清得自己動手。
+  #
+  # ⚠ app 自己建立的**單一檔案**（sqlite 的 data.db）不能用 files 掛：
+  #   bind mount 的來源必須先存在。正確做法是掛它的**父目錄**當 volume，
+  #   再把 app 的路徑設定指到那個目錄底下。
+
+# ---------------------------------------------------------------------------
+# health — 主動 liveness 探測
+# ---------------------------------------------------------------------------
+# 省略整塊 = 不做主動探測（容器 crash 仍會被 monitor 偵測、依 policy 處理）。
+# ⚠ 路徑寫錯會造成 crash loop，比不設更糟——**不確定就整塊不要寫**。
+health:
+  http: /healthz                # http probe 路徑（與 exec 二擇一）
+  port: 8080                    # 寫 run.ports 裡出現過的 port 就好：對得上 host port
+                                # 就打 127.0.0.1:<host port>，對得上容器 port（裸 port、
+                                # 沒發布到 host）就直接打容器 IP。兩種都對得上時走 host。
+                                # 兩邊都對不上 → 當成 host port（很可能打不到，是 crash
+                                # loop 最常見的來源）。⚠ Docker Desktop 例外：容器在 VM
+                                # 內、host 打不到容器 IP，沒發布 host port 就要改用 exec。
+  # exec: ["sh", "-c", "pgrep myapp"]   # exec probe（在容器內跑）
+  interval: 10s                 # 預設 10s
+  timeout: 5s                   # 預設 5s
+  failures: 3                   # 連續失敗幾次觸發重啟，預設 3
+  delay: 5s                     # 啟動後的寬限期，預設 5s
+
+# ---------------------------------------------------------------------------
+# ingress — 反向代理怎麼把這個 app 露出去（只在 qooqd -ingress 時有作用）
+# ---------------------------------------------------------------------------
+# 省略整塊 = 衍生的網址（<名字>.localhost 等）、整個 host 全轉、打第一個 port。
+ingress:
+  hosts:                        # 額外 hostname，與上面的 domain: 相加不是取代
+    - app.example.com
+    - www.example.com
+  port: 8080                    # 開多 port 時指定哪個對外；必須是 run.ports 裡有的
+  path: /api                    # 只轉這個前綴，兩個 app 就能共用同一個網域
+  strip_path: true              # 轉發前拿掉前綴（app 自己服務 / 時要設）
+  tls: true                     # 覆蓋 daemon 的 -ingress-tls；只能關不能開
+                                # （daemon 沒有 443 監聽時寫 true 會被忽略並 warn）
+
+# ---------------------------------------------------------------------------
+# inputs — 這個 app 需要、但 repo 不可能知道的值
+# ---------------------------------------------------------------------------
+# 省略整塊 = 不需要任何外部輸入（絕大多數情況）。
+# 有宣告時，缺值不會讓部署「失敗」，而是停在 last_build_status: needs_input
+# （不跑任何 build），由 `qooq watch get` 印出缺什麼、`qooq watch set-input` 補上。
+inputs:
+  STRIPE_KEY:
+    description: Stripe 密鑰，從 dashboard → Developers → API keys 取得
+                                # 給填值的人看的說明——**這是宣告 input 的全部意義**
+    required: true              # 沒值就擋下部署（與 default 互斥）
+    secret: true                # 加密存、API 一律回 ***
+    example: sk_live_xxx        # 範例值，跟 description 一起顯示
+  PUBLIC_HOST:
+    description: 瀏覽器連得到的位址
+    default: ${host}            # 有預設就永遠不算缺；default 本身也會插值
+
+# 引用方式：${input.STRIPE_KEY}。沒宣告的名字引用不到（報 unknown reference）。
+# 值存在 target 上不在 repo 裡，所以同一份 repo 部署成兩個 target 可以各有各的值。
+
+# ---------------------------------------------------------------------------
+# policy — 重啟策略
+# ---------------------------------------------------------------------------
+policy:
+  restart: on-failure           # always（預設）| on-failure | no
+  replicas: 1                   # 保留欄位，v1 只支援 1
+
+# ---------------------------------------------------------------------------
+# requests — 部署前的 host 容量檢查（像 k8s requests，**不限制**容器）
+# ---------------------------------------------------------------------------
+# 在 build 之前檢查，不符就直接失敗、不白跑一次 build。
+requests:
+  cpu: 0.25                     # cores
+  memory: 256Mi                 # 支援 Ki/Mi/Gi（1024 底）與 KB/MB/GB（1000 底）
+  arch: [amd64, arm64]          # 允許的架構（x86_64/aarch64 等別名會正規化）
+  runtime: container            # container（預設）| process
+                                # ⚠ process + services 會直接報錯：沒有容器引擎
+  disk: 10Gi                    # v1 只 log 不驗證
+  gpu: ""                       # v1 只 log 不驗證
+
+# ---------------------------------------------------------------------------
+# limits — 容器的 cgroup 硬上限（像 k8s limits）
+# ---------------------------------------------------------------------------
+# 省略某一欄 = 該欄自動取 `倍數 × 對應的 requests`（倍數預設 2.0，watcher 可設定）。
+# requests 也沒寫 = 完全不設限。
+limits:
+  cpu: 0.5
+  memory: 512Mi
+
+# =============================================================================
+# ${...} 插值可用的命名空間
+# =============================================================================
+# 可用位置：run.env 的值、run.command 的每個參數、run.env_file 的路徑、
+#           run.files/run.volumes 的路徑、services.* 的欄位。
+#
+#   ${app} ${component} ${network} ${commit}     本次部署的基本資訊（commit 是 7 碼短 sha）
+#   ${service.<key>.host}                        服務的 component 名（同網路可直接連）
+#   ${service.<key>.port|user|password|database|scheme|url}
+#   ${volume.<name>.target}                      volume 在容器內的掛載點
+#   ${volume.<name>.host_path}                   volume 在 host 上的實際路徑
+#   ${env.NAME}                                  **watcher 進程**的環境變數
+#                                                ⚠ 一台 watcher 上的所有 target 共用同一份。
+#                                                  多人共用時等於互相讀得到 secret
+#                                                  （per-namespace secret store 是待辦）
+#
+# ⚠ 打錯字會**明確報錯並列出可用的 key**，不會安靜地展開成空字串。
+#   （${service.db.hst} 展開成空字串的話，症狀會是「app 起得來但連不上」。）
+# =============================================================================

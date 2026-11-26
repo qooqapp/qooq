@@ -1,0 +1,22 @@
+# qooq.yaml — app manifest（精簡格式；完整欄位參考見 docs/DEPLOY-CONFIG.md）
+version: 1
+app: fullstack-server
+description: React(Vite) 前端 + Go(gin) 後端，go:embed 成單一 binary 的範例
+requests:            # 部署前檢查 host 容量夠不夠（不設限容器）
+  cpu: 0.5
+  memory: 256Mi
+# limits 省略：容器上限自動 = 2× requests（cpu 1.0 / memory 512Mi）
+
+# 不放 Dockerfile：go-react 模板會先在 web_dir(=web) 跑 npm build，
+# 再把產物複製進 embed_dest(=internal/webui/dist) 一起編進單一 Go binary。
+# 本範例的目錄結構與模板變數預設值完全對齊，全部用預設值即可。
+build:
+  template: go-react
+
+run:
+  ports:
+    - "auto:8080"
+
+health:
+  http: /api/hello
+  port: 8080

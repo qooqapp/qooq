@@ -1,0 +1,10 @@
+<!doctype html>
+<title>flask-app</title>
+<h1>Hello from Flask</h1>
+<form method="post" action="/notes">
+  <input name="text" placeholder="a note" />
+  <button>Add</button>
+</form>
+<ul>
+  {% for n in notes %}<li>{{ n }}</li>{% endfor %}
+</ul>

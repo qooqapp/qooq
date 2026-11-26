@@ -1,0 +1,12 @@
+FROM ruby:{{.ruby_version}}-slim
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential git{{if .runtime_deps}} {{.runtime_deps}}{{end}} \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+# Gemfile.lock is globbed rather than required: a repo without one still builds,
+# it just resolves versions at build time instead of using the pinned set.
+COPY Gemfile Gemfile.lock* ./
+RUN bundle config set --local without '{{.bundle_without}}' && bundle install
+COPY . .
+{{if .build_cmd}}RUN {{.build_cmd}}
+{{end}}EXPOSE {{.port}}
+CMD {{.start_cmd}}

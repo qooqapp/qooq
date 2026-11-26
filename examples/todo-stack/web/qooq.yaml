@@ -1,0 +1,18 @@
+version: 1
+app: web
+description: Server-rendered todo page (Node, no dependencies)
+
+build:
+  template: node
+
+run:
+  ports:
+    - "auto:3000"
+  env:
+    # The browser runs outside the container, so it needs api's address as
+    # seen from this machine: host IP and published port.
+    API_PUBLIC: "${component.api.endpoint}"
+
+health:
+  http: /healthz
+  port: 3000

@@ -1,0 +1,23 @@
+# qooq.yaml — app manifest（精簡格式；完整欄位參考見 docs/DEPLOY-CONFIG.md）
+version: 1
+app: api-server
+description: Go + gin 最小 API 範例，故意不放 Dockerfile，改用內建 go 模板現場生成
+requests:            # 部署前檢查 host 容量夠不夠（像 k8s requests，不設限容器）
+  cpu: 0.25
+  memory: 128Mi
+limits:              # 容器 cgroup 硬上限（像 k8s limits）；省略整塊時每欄 = 2× requests
+  cpu: 0.5
+  memory: 256Mi
+
+# 本範例沒有 Dockerfile：watcher clone 後用內建 go 模板 render 出
+# Dockerfile.qooq-generated 再 build（模板一覽表見 docs/DEPLOY-CONFIG.md）。
+build:
+  template: go
+
+run:
+  ports:
+    - "auto:8080"
+
+health:
+  http: /hello
+  port: 8080

@@ -1,0 +1,20 @@
+{
+  "name": "qooq-deploy",
+  "displayName": "qooq-deploy",
+  "description": "Deploy the project you just finished writing to your local machine and hand back a working URL. Detects the project type, writes qooq.yaml, brings the qooq daemons up, deploys, and verifies the endpoint by calling it.",
+  "author": {
+    "name": "qooqapp"
+  },
+  "homepage": "https://github.com/qooqapp/qooq",
+  "skills": [
+    "./pkg/skills/"
+  ],
+  "mcpServers": {
+    "qooq": {
+      "command": "qooq",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

@@ -1,0 +1,17 @@
+FROM oven/bun:{{.bun_version}} AS deps
+WORKDIR /app
+# Both lockfile names are globbed: bun wrote a binary bun.lockb until 1.2 and a
+# text bun.lock after it, and a repo has one or the other.
+COPY package.json bun.lock* bun.lockb* ./
+# --frozen-lockfile only when there is a lockfile to freeze. Demanding one
+# fails a repo that has not committed it with an error about the flag rather
+# than about the missing file — the same trap the rust template had.
+RUN if [ -s bun.lock ] || [ -s bun.lockb ]; then bun install --frozen-lockfile; else bun install; fi
+
+FROM oven/bun:{{.bun_version}}
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+{{if .build_cmd}}RUN {{.build_cmd}}
+{{end}}EXPOSE {{.port}}
+CMD {{.start_cmd}}

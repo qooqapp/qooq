@@ -1,0 +1,14 @@
+{
+  "name": "qooq",
+  "owner": {
+    "name": "qooqapp"
+  },
+  "description": "Deploy a project you just wrote to your own machine and get back a URL that works.",
+  "plugins": [
+    {
+      "name": "qooq-deploy",
+      "source": "./",
+      "description": "Detects the project type, writes qooq.yaml, starts qooq, deploys, and verifies the endpoint for real. Installs qooq itself if the machine does not have it."
+    }
+  ]
+}

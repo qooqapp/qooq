@@ -1,0 +1,201 @@
+# qooq 的 k8s 部署（demo / 過渡用途）。
+#
+# 誠實警告：qooqd 本身就是編排器，把它塞進 k8s 是「編排器裡跑編排器」，
+# 只在「團隊已有 k8s、想用它管 VM 上的 docker 容器」的過渡場景有意義。
+# 硬前提：
+# 1) 節點必須有 Docker Engine（/var/run/docker.sock）。純 containerd 節點沒有。
+# 2) qooqd 用 hostNetwork——它的 http health probe 從自己的 netns 打
+#    127.0.0.1:{HostPort}，且它建的容器是 host 上的兄弟容器（發布 host port）。
+# 3) 兩個 Deployment 都是單副本 + Recreate（bbolt / sqlite 都是單 writer）。
+# 套用前把 Secret 裡三個 CHANGE_ME 換掉：
+#   kubectl apply -f deploy/k8s.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qooq
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: qooq-secrets
+  namespace: qooq
+type: Opaque
+stringData:
+  qooq-token: CHANGE_ME            # qooqd API bearer token
+  watcher-http-token: CHANGE_ME    # watcher API bearer token
+  watcher-secret-key: CHANGE_ME    # watcher credential 加密 key
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qooqd-data
+  namespace: qooq
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: watcher-data
+  namespace: qooq
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qooqd
+  namespace: qooq
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qooqd
+  template:
+    metadata:
+      labels:
+        app: qooqd
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: qooqd
+          image: qooq/qooqd:latest # 換成你 push 到 registry 的 tag
+          args:
+            # hostNetwork 下 bind 0.0.0.0 讓 watcher pod 能經 Service 連入；
+            # 對外防護靠 QOOQ_TOKEN + 節點防火牆
+            ["-listen", "0.0.0.0:7777", "-data", "/data/qooq.db", "-backup-dir", "/data/backups"]
+          env:
+            - name: QOOQ_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: qooq-secrets
+                  key: qooq-token
+          ports:
+            - containerPort: 7777
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet: # /v1/healthz 豁免 token
+              path: /v1/healthz
+              port: 7777
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v1/healthz
+              port: 7777
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+        - name: data
+          persistentVolumeClaim:
+            claimName: qooqd-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qooqd
+  namespace: qooq
+spec:
+  selector:
+    app: qooqd
+  ports:
+    - port: 7777
+      targetPort: 7777
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qooq-watcher
+  namespace: qooq
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qooq-watcher
+  template:
+    metadata:
+      labels:
+        app: qooq-watcher
+    spec:
+      containers:
+        - name: qooq-watcher
+          image: qooq/qooq-watcher:latest # 換成你 push 到 registry 的 tag
+          env:
+            - name: QOOQ_WATCHER_HTTP_HOST
+              value: "0.0.0.0"
+            - name: QOOQ_WATCHER_HTTP_PORT
+              value: "7778"
+            - name: QOOQ_WATCHER_QOOQD_ADDR
+              value: http://qooqd:7777
+            - name: QOOQ_WATCHER_QOOQD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: qooq-secrets
+                  key: qooq-token
+            - name: QOOQ_WATCHER_HTTP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: qooq-secrets
+                  key: watcher-http-token
+            - name: QOOQ_WATCHER_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: qooq-secrets
+                  key: watcher-secret-key
+          ports:
+            - containerPort: 7778
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet: # healthcheck 模組的端點，豁免 token
+              path: /healthz
+              port: 7778
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 7778
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: watcher-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qooq-watcher
+  namespace: qooq
+spec:
+  selector:
+    app: qooq-watcher
+  ports:
+    - port: 7778
+      targetPort: 7778

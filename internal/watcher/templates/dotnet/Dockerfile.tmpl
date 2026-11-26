@@ -1,0 +1,14 @@
+FROM mcr.microsoft.com/dotnet/sdk:{{.dotnet_version}} AS build
+WORKDIR /src
+COPY . .
+RUN dotnet publish {{if .project}}{{.project}} {{end}}-c Release -o /out
+
+FROM mcr.microsoft.com/dotnet/aspnet:{{.dotnet_version}}
+WORKDIR /app
+COPY --from=build /out .
+# The entry assembly is found rather than named: publish writes exactly one
+# .deps.json and it is named after that assembly, so this works without the
+# manifest having to repeat the project name.
+ENV ASPNETCORE_URLS=http://+:{{.port}}
+EXPOSE {{.port}}
+CMD ["sh", "-c", "exec dotnet \"$(basename \"$(ls /app/*.deps.json | head -1)\" .deps.json).dll\""]

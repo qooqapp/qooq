@@ -1,0 +1,19 @@
+FROM maven:{{.maven_tag}} AS build
+WORKDIR /src
+# pom.xml alone first so a code-only change reuses the cached dependency layer;
+# go-offline is what makes that layer worth having.
+COPY pom.xml .
+RUN mvn -B -q dependency:go-offline
+COPY . .
+RUN mvn -B -q package -DskipTests
+
+FROM eclipse-temurin:{{.jre_version}}-jre
+WORKDIR /app
+# The jar name carries the version, so it is matched rather than named. Maven
+# also leaves an "original-*.jar" beside the runnable one when the Spring Boot
+# plugin repackages, which is why that one is excluded.
+COPY --from=build /src/target/*.jar /tmp/jars/
+RUN find /tmp/jars -name '*.jar' ! -name 'original-*' ! -name '*-sources.jar' \
+      -exec cp {} /app/app.jar \; && rm -rf /tmp/jars
+EXPOSE {{.port}}
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

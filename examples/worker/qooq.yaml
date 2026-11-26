@@ -1,0 +1,20 @@
+# qooq.yaml — app manifest（精簡格式；完整欄位參考見 docs/DEPLOY-CONFIG.md）
+version: 1
+app: worker
+description: stdlib-only 背景長駐程序範例，無對外 port，用 exec probe 看心跳檔案
+requests:            # 部署前檢查 host 容量夠不夠（不設限容器）
+  cpu: 0.1
+  memory: 32Mi
+# limits 省略：容器上限自動 = 2× requests（cpu 0.2 / memory 64Mi）
+
+# 不放 Dockerfile，用內建 go 模板 render 出 Dockerfile.qooq-generated 再 build。
+build:
+  template: go
+
+policy:
+  restart: always
+
+# 用 exec probe（不用 pgrep：容器內程序名是完整路徑 /app，pgrep 匹配不到）；
+# 心跳檔案 1 分鐘內有更新才算活著。
+health:
+  exec: ["sh", "-c", "find /tmp/heartbeat -mmin -1 | grep -q ."]

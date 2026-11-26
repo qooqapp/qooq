@@ -1,0 +1,1333 @@
+openapi: 3.0.3
+info:
+  title: qooqd API
+  description: |
+    REST API for qooqd, the qooq Component-as-a-Service orchestrator daemon.
+    Manages containers ("components"), logical groups of components, and
+    local images on a single Docker (or process-runtime) host.
+
+    Authentication: when qooqd is started with `-token`/`QOOQ_TOKEN`, every
+    `/v1/*` route except `/v1/healthz` requires `Authorization: Bearer <token>`.
+    When no token is configured, the API has no authentication at all (the
+    `bearerAuth` security requirement below simply has no effect in that mode).
+
+    Drive-by hardening (no-auth mode only): when no token is configured, every
+    `/v1/*` request must carry a `Host` header matching the localhost forms of
+    the listen address (or an entry from `-allowed-hosts`/`QOOQ_ALLOWED_HOSTS`);
+    mismatches get 403. Routes that decode a JSON body additionally require
+    `Content-Type: application/json` (415 otherwise); this check is always on.
+  version: "0.1.0"
+servers:
+  - url: http://127.0.0.1:7777
+    description: Default local bind address (qooqd -listen 127.0.0.1:7777)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: system
+    description: Health, version, host capacity, and datastore backup.
+  - name: components
+    description: Deploy, inspect, and control individual components (containers).
+  - name: groups
+    description: Logical groupings of components for batch start/stop.
+  - name: images
+    description: Local image acquisition (pull/load/build) and management.
+
+paths:
+  /v1/healthz:
+    get:
+      tags: [system]
+      summary: Liveness/readiness check
+      description: |
+        Reports daemon health and which runtime backend is active. Does not
+        require authentication even when a token is configured.
+      operationId: healthz
+      security: []
+      responses:
+        "200":
+          description: Daemon is reachable (status may still be "degraded" if the runtime ping failed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /v1/version:
+    get:
+      tags: [system]
+      summary: Get daemon version and API version
+      operationId: getVersion
+      responses:
+        "200":
+          description: Version info.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/system/capacity:
+    get:
+      tags: [system]
+      summary: Get host resource capacity
+      description: |
+        Reports host CPU core count, total memory, architecture, OS, and the
+        active runtime backend ("docker" or "process"), independent of any
+        specific container/runtime state. Consumed by qooq-watcher's app
+        manifest `requires` validation before building/deploying.
+      operationId: getCapacity
+      responses:
+        "200":
+          description: Host capacity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapacityResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/system/backup:
+    get:
+      tags: [system]
+      summary: Download a consistent snapshot of the datastore
+      description: |
+        Streams a point-in-time consistent snapshot of qooqd's bbolt store
+        (safe to call while the daemon is live). Restoring means stopping
+        qooqd and overwriting its `-data` file with the downloaded content.
+      operationId: getBackup
+      responses:
+        "200":
+          description: Datastore snapshot.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/components:
+    post:
+      tags: [components]
+      summary: Deploy a new component
+      description: |
+        Creates and starts a new component. Fails with 409 if a non-removed
+        component already owns the requested name.
+      operationId: deployComponent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeployRequest"
+      responses:
+        "201":
+          description: Component created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: A non-removed component already uses this name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [components]
+      summary: Create-or-replace a component by name
+      description: |
+        Upsert semantics: if no non-removed component owns `name`, behaves
+        like deploy (201). If one does, its container is replaced in place
+        (same component id, new image/spec; the previous image is recorded
+        for rollback) and 200 is returned. Name is carried in the request
+        body (not a path param) specifically to avoid colliding with the
+        `/v1/components/{id}` routes.
+      operationId: upsertComponent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeployRequest"
+      responses:
+        "200":
+          description: Existing component replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "201":
+          description: New component created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [components]
+      summary: List all components
+      operationId: listComponents
+      responses:
+        "200":
+          description: All known components.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ComponentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/components/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ComponentID"
+    get:
+      tags: [components]
+      summary: Get a component by id or name
+      operationId: getComponent
+      responses:
+        "200":
+          description: The component.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [components]
+      summary: Remove a component
+      operationId: removeComponent
+      responses:
+        "204":
+          description: Component removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/components/{id}/start:
+    parameters:
+      - $ref: "#/components/parameters/ComponentID"
+    post:
+      tags: [components]
+      summary: Start a stopped component
+      operationId: startComponent
+      responses:
+        "200":
+          description: Component started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/components/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/ComponentID"
+    post:
+      tags: [components]
+      summary: Stop a running component
+      operationId: stopComponent
+      responses:
+        "200":
+          description: Component stopped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/components/{id}/rollback:
+    parameters:
+      - $ref: "#/components/parameters/ComponentID"
+    post:
+      tags: [components]
+      summary: Roll back a component to its previous image
+      description: |
+        Swaps the component's image back to `previous_image`. Calling this
+        twice in a row round-trips (it swaps again, undoing the previous
+        rollback). Fails with 409 if the component has never been
+        upserted/rolled-back before (no previous image recorded).
+      operationId: rollbackComponent
+      responses:
+        "200":
+          description: Component rolled back.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Nothing to roll back to (no previous image recorded).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/components/{id}/stats:
+    parameters:
+      - $ref: "#/components/parameters/ComponentID"
+    get:
+      tags: [components]
+      summary: Get the latest resource-usage sample, or stream samples via SSE
+      description: |
+        Without `?watch=1`, returns the single latest CPU/memory sample.
+        With `?watch=1`, upgrades to a Server-Sent Events stream that emits
+        one `StatsResponse` JSON payload roughly every 2 seconds (as
+        `data: <json>\n\n`) until the client disconnects or the component is
+        removed.
+      operationId: getComponentStats
+      parameters:
+        - name: watch
+          in: query
+          required: false
+          description: Set to `1` or `true` to upgrade to an SSE stream instead of a single sample.
+          schema:
+            type: string
+            enum: ["1", "true"]
+      responses:
+        "200":
+          description: Latest sample (default) or an SSE stream (when `watch=1`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponse"
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  A sequence of Server-Sent Events, each `data:` line a JSON-encoded
+                  StatsResponse. Event framing details are not modeled here.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Component not found, or no stats sample exists yet for it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/components/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/ComponentID"
+    get:
+      tags: [components]
+      summary: List a component's lifecycle/crash event log
+      operationId: listComponentEvents
+      responses:
+        "200":
+          description: Events, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EventResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/components/{id}/logs:
+    parameters:
+      - $ref: "#/components/parameters/ComponentID"
+    get:
+      tags: [components]
+      summary: Get (or follow) a component's combined stdout+stderr output
+      description: |
+        Streams plain-text log output. Without `follow`, the response ends
+        (EOF) once currently available output has been drained. With
+        `follow=1`, the connection stays open and new output is flushed as
+        it is produced, until the client disconnects.
+      operationId: getComponentLogs
+      parameters:
+        - name: follow
+          in: query
+          required: false
+          description: Set to `1` or `true` to keep the stream open and follow new output.
+          schema:
+            type: string
+            enum: ["1", "true"]
+        - name: tail
+          in: query
+          required: false
+          description: Number of trailing lines/bytes of existing output to include before following. Must be a non-negative integer.
+          schema:
+            type: integer
+            minimum: 0
+        - name: timestamps
+          in: query
+          required: false
+          description: >
+            Set to `1` or `true` to prefix every line with the engine-recorded
+            time (docker runtime: RFC3339Nano, like `docker logs -t`). Ignored
+            by the process runtime — its log files carry no per-line times.
+          schema:
+            type: string
+            enum: ["1", "true"]
+      responses:
+        "200":
+          description: Log output stream.
+          content:
+            text/plain:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid `tail` value (must be a non-negative integer).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/groups:
+    post:
+      tags: [groups]
+      summary: Create a group
+      operationId: createGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGroupRequest"
+      responses:
+        "201":
+          description: Group created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [groups]
+      summary: List all groups
+      operationId: listGroups
+      responses:
+        "200":
+          description: All known groups.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GroupResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/groups/{id}:
+    parameters:
+      - $ref: "#/components/parameters/GroupID"
+    get:
+      tags: [groups]
+      summary: Get a group and its current members
+      operationId: getGroup
+      responses:
+        "200":
+          description: The group and its members.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupDetailResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [groups]
+      summary: Delete a group
+      description: |
+        By default only the group itself is deleted (members become
+        ungrouped). With `?cascade=true`, member components are removed too.
+      operationId: deleteGroup
+      parameters:
+        - name: cascade
+          in: query
+          required: false
+          description: Set to `true` to also remove the group's member components.
+          schema:
+            type: boolean
+      responses:
+        "204":
+          description: Group (and, if cascade, its members) removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/groups/{id}/start:
+    parameters:
+      - $ref: "#/components/parameters/GroupID"
+    post:
+      tags: [groups]
+      summary: Start every member of a group
+      description: Per-member failures are reported in the batch result and do not abort the batch.
+      operationId: startGroup
+      responses:
+        "200":
+          description: Per-member start results.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BatchResultResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/groups/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/GroupID"
+    post:
+      tags: [groups]
+      summary: Stop every member of a group
+      description: Per-member failures are reported in the batch result and do not abort the batch.
+      operationId: stopGroup
+      responses:
+        "200":
+          description: Per-member stop results.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BatchResultResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/groups/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/GroupID"
+    post:
+      tags: [groups]
+      summary: Add a component to a group
+      operationId: addGroupMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddMemberRequest"
+      responses:
+        "200":
+          description: The component, now a member of the group.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+
+  /v1/groups/{id}/members/{componentID}:
+    parameters:
+      - $ref: "#/components/parameters/GroupID"
+      - name: componentID
+        in: path
+        required: true
+        description: Component id (or name) to remove from the group.
+        schema:
+          type: string
+    delete:
+      tags: [groups]
+      summary: Remove a component from a group
+      operationId: removeGroupMember
+      responses:
+        "200":
+          description: The component, no longer a member of any group.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/images/pull:
+    post:
+      tags: [images]
+      summary: Pull an image from a registry
+      operationId: pullImage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PullRequest"
+      responses:
+        "200":
+          description: Image pulled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PullResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/images/digest:
+    post:
+      tags: [images]
+      summary: Resolve an image ref's current registry digest (no pull) (M20a)
+      operationId: digestImage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImageDigestRequest"
+      responses:
+        "200":
+          description: Digest resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageDigestResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Image ref not found on the registry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "502":
+          description: Registry lookup failed (network, auth, etc).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/images/load:
+    post:
+      tags: [images]
+      summary: Load images from a `docker save` tarball
+      description: The request body is streamed straight to the runtime adapter, never buffered fully in memory.
+      operationId: loadImage
+      requestBody:
+        required: true
+        content:
+          application/x-tar:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Images loaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/images/build:
+    post:
+      tags: [images]
+      summary: Build an image from a build-context tarball
+      description: The request body is a build-context tar stream, passed straight through unbuffered.
+      operationId: buildImage
+      parameters:
+        - name: dockerfile
+          in: query
+          required: false
+          description: Path to the Dockerfile within the build context. Defaults to "Dockerfile" server-side when empty.
+          schema:
+            type: string
+        - name: tag
+          in: query
+          required: false
+          description: Tag to apply to the built image.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/x-tar:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: |
+            Image built. Note: a failed Docker build can still return HTTP 200
+            with the error embedded in the underlying build stream; qooqd
+            surfaces that as a 500 (see below) after detecting it server-side.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/images:
+    get:
+      tags: [images]
+      summary: List locally available images
+      operationId: listImages
+      responses:
+        "200":
+          description: >
+            Images known to the runtime. Intermediate build-cache layers are
+            excluded (they are not addressable); untagged dangling images are
+            included, since they hold disk and can be removed. Each entry says
+            whether qooq built it (the qooq.built label) — nothing is filtered
+            out on that basis, since the daemon's view is the whole truth.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ImageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    delete:
+      tags: [images]
+      summary: Remove a locally available image
+      description: |
+        `ref` is a query parameter (not a path segment) so tags containing
+        `/` and `:` round-trip without colliding with routing.
+      operationId: removeImage
+      parameters:
+        - name: ref
+          in: query
+          required: true
+          description: Image ref, tag, or id to remove.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Image removed.
+        "400":
+          description: Missing `ref` query parameter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Image not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Image is in use by a container.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        `Authorization: Bearer <token>`. Only enforced when qooqd was started
+        with `-token`/`QOOQ_TOKEN` set; otherwise the API has no auth at all.
+
+  parameters:
+    ComponentID:
+      name: id
+      in: path
+      required: true
+      description: Component ULID or name.
+      schema:
+        type: string
+    GroupID:
+      name: id
+      in: path
+      required: true
+      description: Group id.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Malformed request body or missing required field.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid bearer token (only when qooqd has a token configured).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: No component/group/resource exists with the given id or name.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Unexpected server-side failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnsupportedMediaType:
+      description: Content-Type must be application/json.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: Uniform error envelope returned by every non-2xx JSON response.
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          description: "\"ok\" or \"degraded\" (runtime ping failed)."
+          example: ok
+        runtime:
+          type: string
+          description: Active runtime backend.
+          example: docker
+      required: [status, runtime]
+
+    VersionResponse:
+      type: object
+      properties:
+        version:
+          type: string
+          example: "0.1.0"
+        runtime:
+          type: string
+          example: docker
+        api_version:
+          type: string
+          example: v1
+      required: [version, runtime, api_version]
+
+    CapacityResponse:
+      type: object
+      description: Host resource capacity, independent of container/runtime state.
+      properties:
+        cpu_cores:
+          type: integer
+          example: 8
+        memory_bytes:
+          type: integer
+          format: int64
+          example: 17179869184
+        arch:
+          type: string
+          example: arm64
+        os:
+          type: string
+          example: darwin
+        runtime:
+          type: string
+          description: |
+            Active runtime backend ("docker" or "process"). Empty on a
+            pre-M16 qooqd; callers should treat empty as "unknown, skip
+            validation", not as a mismatch.
+          example: docker
+        advertise_host:
+          type: string
+          description: |
+            Address other machines reach this host at
+            (-advertise-host/QOOQ_ADVERTISE_HOST, else auto-detected from the
+            primary interface). Exposed so a manifest can reference ${host}
+            instead of hardcoding a LAN IP. Empty when detection found nothing.
+          example: 192.168.1.50
+      required: [cpu_cores, memory_bytes, arch, os, runtime]
+
+    PortSpec:
+      type: object
+      description: A published port in a deploy request.
+      properties:
+        container_port:
+          type: integer
+        host_port:
+          type: integer
+        protocol:
+          type: string
+          description: "\"tcp\" (default) or \"udp\"."
+          enum: [tcp, udp]
+      required: [container_port]
+
+    MountSpec:
+      type: object
+      description: >
+        A host path made visible inside the container. Both paths are
+        absolute: a qooq.yaml's declarative forms (repo-relative file, named
+        volume) are resolved to host paths by the watcher before the deploy
+        request is built, so qooqd only ever sees resolved paths.
+      properties:
+        host_path:
+          type: string
+          description: Absolute path on the docker host.
+        container_path:
+          type: string
+          description: Absolute path inside the container.
+        read_only:
+          type: boolean
+          description: Mount read-only. Defaults to false.
+      required: [host_path, container_path]
+
+    HealthCheckSpec:
+      type: object
+      description: |
+        Liveness probe configuration. Type "http" uses http_path+http_port
+        (probed against the published host port from qooqd's own network
+        namespace); type "exec" runs exec_command inside the container.
+        Unset numeric fields get server-side defaults (interval 10s, timeout
+        5s, failure_threshold 3, initial_delay 5s).
+      properties:
+        type:
+          type: string
+          enum: [http, exec]
+        http_path:
+          type: string
+          example: /healthz
+        http_port:
+          type: integer
+        exec_command:
+          type: array
+          items:
+            type: string
+        interval_seconds:
+          type: integer
+        timeout_seconds:
+          type: integer
+        failure_threshold:
+          type: integer
+        initial_delay_seconds:
+          type: integer
+      required: [type]
+
+    DeployRequest:
+      type: object
+      properties:
+        namespace:
+          type: string
+          description: >
+            Scopes name. Components in different namespaces may share a name:
+            each namespace has its own network (so the bare name still
+            resolves inside it) and the container name is qualified as
+            "<namespace>_<name>". Omitted means "default", which is stored
+            and returned like any other namespace — but it is the one
+            namespace that does not qualify the container name or the
+            generated hostname, so filling in the default renames nothing.
+            Namespace and name must both be lowercase DNS labels.
+        name:
+          type: string
+        image:
+          type: string
+        command:
+          type: array
+          items:
+            type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        ports:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortSpec"
+        mounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/MountSpec"
+          description: Host paths bind-mounted into the container.
+        network:
+          type: string
+          description: >
+            Container network to join, created if missing. Components on the
+            same network resolve each other by component name. Empty keeps
+            the engine default.
+        group_id:
+          type: string
+        restart_policy:
+          type: string
+          description: One of "" (treated as "no"), "no", "on-failure", "always".
+          enum: ["", "no", "on-failure", "always"]
+        cpu_limit:
+          type: number
+          format: double
+          description: CPU cores, e.g. 0.5.
+        mem_limit_bytes:
+          type: integer
+          format: int64
+        domain:
+          type: string
+          description: >
+            Public hostname this component is meant to serve (e.g.
+            "app.example.com"). Declarative metadata in v1 — stored and echoed
+            back, not routed.
+        health_check:
+          $ref: "#/components/schemas/HealthCheckSpec"
+      required: [name, image]
+
+    ComponentResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        namespace:
+          type: string
+        container_name:
+          type: string
+          description: Engine-level name ("<namespace>_<name>", or just the name when unnamespaced).
+          description: Component ULID (stable across crash-rebuilds and upsert replacements).
+        name:
+          type: string
+        image:
+          type: string
+        phase:
+          type: string
+          description: Runtime-neutral lifecycle phase.
+          enum: [Pending, Creating, Running, Exited, Failed, Removed]
+        container_id:
+          type: string
+        exit_code:
+          type: integer
+        crash_count:
+          type: integer
+        group_id:
+          type: string
+        ports:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortSpec"
+          description: Published/exposed port mappings from the deploy spec.
+        endpoints:
+          type: array
+          items:
+            type: string
+          description: |
+            Ready-to-open URLs. With -ingress, the hostnames the ingress routes
+            to this component come first (a hostname held by an older component
+            is not listed); then the published host ports, composed from the
+            daemon's advertise host. With -ingress-app-domain, a namespace shared with other users
+            component is listed only at its assigned
+            https://<label>.<app domain>.
+          example: ["http://192.168.1.50:19000"]
+        mounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/MountSpec"
+          description: Host paths bind-mounted into the container.
+        network:
+          type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: Environment variables from the deploy spec.
+        desired_state:
+          type: string
+          description: Operator intent; only "Running" components are auto-restarted.
+          enum: [Running, Stopped]
+        restart_policy:
+          type: string
+          enum: ["", "no", "on-failure", "always"]
+        restart_count:
+          type: integer
+        previous_image:
+          type: string
+          description: Image this component ran before its last upsert/rollback; empty if never replaced.
+        cpu_limit:
+          type: number
+          format: double
+        mem_limit_bytes:
+          type: integer
+          format: int64
+        domain:
+          type: string
+          description: Public hostname (declarative metadata, see DeployRequest.domain).
+        last_restart_at:
+          type: string
+          format: date-time
+        backoff_until:
+          type: string
+          format: date-time
+        restart_exhausted:
+          type: boolean
+          description: True once the restart manager has given up after 10 consecutive restarts; cleared by a manual start, upsert, or rollback.
+        last_error:
+          type: string
+          description: Why the component last failed to create or start (e.g. a host port conflict). Cleared on every successful start, so a non-empty value always describes the current Failed state.
+        health_check:
+          $ref: "#/components/schemas/HealthCheckSpec"
+        healthy_at:
+          type: string
+          format: date-time
+          description: >-
+            When the current container's health probe first passed; omitted while it
+            never has, and always omitted for a component with no health check. This is
+            the difference between started and ready: a database process is running
+            several seconds before it accepts connections, and anything waiting to
+            connect needs the second answer. Scoped to the current container, so a
+            replacement starts over.
+        started_at:
+          type: string
+          format: date-time
+          description: When the current container instance was started; zero/omitted if never started.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - image
+        - phase
+        - exit_code
+        - crash_count
+        - restart_count
+        - created_at
+        - updated_at
+
+    PullRequest:
+      type: object
+      properties:
+        ref:
+          type: string
+        platform:
+          type: string
+        username:
+          type: string
+          description: Optional registry username (M20a). Empty = anonymous pull.
+        password:
+          type: string
+          description: Optional registry password (M20a).
+      required: [ref]
+
+    PullResponse:
+      type: object
+      properties:
+        image_id:
+          type: string
+      required: [image_id]
+
+    ImageDigestRequest:
+      type: object
+      properties:
+        ref:
+          type: string
+        username:
+          type: string
+          description: Optional registry username. Empty = anonymous lookup.
+        password:
+          type: string
+          description: Optional registry password.
+      required: [ref]
+
+    ImageDigestResponse:
+      type: object
+      properties:
+        ref:
+          type: string
+        digest:
+          type: string
+          description: Content digest as reported by the registry (e.g. sha256:...).
+      required: [ref, digest]
+
+    LoadResponse:
+      type: object
+      properties:
+        image_ids:
+          type: array
+          items:
+            type: string
+      required: [image_ids]
+
+    BuildResponse:
+      type: object
+      properties:
+        image_id:
+          type: string
+      required: [image_id]
+
+    ImageResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        created:
+          type: string
+          format: date-time
+        size:
+          type: integer
+          format: int64
+      required: [id, created, size]
+
+    StatsResponse:
+      type: object
+      properties:
+        component_id:
+          type: string
+        cpu_percent:
+          type: number
+          format: double
+        mem_usage:
+          type: integer
+          format: int64
+        mem_limit:
+          type: integer
+          format: int64
+        time:
+          type: string
+          format: date-time
+      required: [component_id, cpu_percent, mem_usage, mem_limit, time]
+
+    EventResponse:
+      type: object
+      properties:
+        component_id:
+          type: string
+        type:
+          type: string
+          example: crash
+        message:
+          type: string
+        exit_code:
+          type: integer
+        time:
+          type: string
+          format: date-time
+      required: [component_id, type, exit_code, time]
+
+    CreateGroupRequest:
+      type: object
+      properties:
+        name:
+          type: string
+      required: [name]
+
+    GroupResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+      required: [id, name, created_at]
+
+    GroupDetailResponse:
+      description: A GroupResponse plus its current members.
+      allOf:
+        - $ref: "#/components/schemas/GroupResponse"
+        - type: object
+          properties:
+            members:
+              type: array
+              items:
+                $ref: "#/components/schemas/ComponentResponse"
+          required: [members]
+
+    AddMemberRequest:
+      type: object
+      properties:
+        component_id:
+          type: string
+      required: [component_id]
+
+    BatchResultResponse:
+      type: object
+      description: One member's outcome from a group start/stop batch.
+      properties:
+        component_id:
+          type: string
+        name:
+          type: string
+        phase:
+          type: string
+          enum: [Pending, Creating, Running, Exited, Failed, Removed]
+        err:
+          type: string
+          description: Non-empty when this member's operation failed; a batch never aborts on a per-member failure.
+      required: [component_id, name, phase]

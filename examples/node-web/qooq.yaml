@@ -1,0 +1,19 @@
+# qooq.yaml — app manifest（精簡格式；完整欄位參考見 docs/DEPLOY-CONFIG.md）
+version: 1
+app: node-web
+description: Express 最小 API 範例，不放 Dockerfile，改用內建 node 模板現場生成
+requests:            # 部署前檢查 host 容量夠不夠（不設限容器）
+  cpu: 0.25
+  memory: 128Mi
+# limits 省略：容器上限自動 = 2× requests（cpu 0.5 / memory 256Mi）
+
+build:
+  template: node
+
+run:
+  ports:
+    - "auto:3000"
+
+health:
+  http: /hello
+  port: 3000

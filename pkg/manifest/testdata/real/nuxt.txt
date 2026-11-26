@@ -1,0 +1,38 @@
+# Written by `qooq init` from what is in this directory.
+#
+# Edit this freely — qooq keeps your changes and will not regenerate it.
+# Field reference: docs/DEPLOY-CONFIG.md
+#
+# What was detected (node-nuxt):
+#   - pnpm detected, enabling corepack
+#   - nuxt detected: building in the image and starting "node .output/server/index.mjs"
+#   - this is also a workspace root (packages/kit, packages/nitro-server, packages/nuxt, packages/rspack, packages/schema and 4 more) — if the deployable app is one of those, point context_subdir at it instead
+
+version: 1
+app: nuxt
+
+build:
+  template: node
+  template_vars:
+    build_cmd: "pnpm run build"
+    corepack: "true"
+    install_cmd: "pnpm install --frozen-lockfile"
+    start_cmd: "node .output/server/index.mjs"
+
+run:
+  ports:
+    - "auto:3000"
+
+# A health check lets qooq notice when this stops answering and restart it.
+# qooq cannot tell which path your app serves — that is in the code, not the
+# files — so try these against a running instance and uncomment the one that
+# answers 200:
+#
+#   curl -i http://localhost:3000/healthz
+#   curl -i http://localhost:3000/health
+#   curl -i http://localhost:3000/ping
+#   curl -i http://localhost:3000/
+#
+# health:
+#   http: /healthz
+#   port: 3000

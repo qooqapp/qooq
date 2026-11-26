@@ -1,0 +1,20 @@
+FROM rust:{{.rust_version}}-slim AS build
+WORKDIR /src
+{{if .build_deps}}RUN apt-get update && apt-get install -y --no-install-recommends {{.build_deps}} && rm -rf /var/lib/apt/lists/*
+{{end}}COPY . .
+# --locked only when there is a lockfile to honour. Requiring one turns every
+# repo that does not commit Cargo.lock into a build failing with cargo's exit
+# 101 and nothing that names the cause; resolving fresh versions when a
+# lockfile exists throws away the reproducibility it was committed for.
+RUN if [ -f Cargo.lock ]; then cargo build --release --locked; else cargo build --release; fi
+# bin_name is only needed for a workspace or a crate with several binaries.
+# A single-binary crate is the common case and naming it would make every
+# manifest carry a value it could have worked out.
+RUN if [ -n "{{.bin_name}}" ]; then cp target/release/{{.bin_name}} /out-app; \
+    else cp "$(find target/release -maxdepth 1 -type f -perm -111 ! -name '*.d' | head -1)" /out-app; fi
+
+FROM debian:{{.debian_tag}}-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates{{if .runtime_deps}} {{.runtime_deps}}{{end}} && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out-app /app
+EXPOSE {{.port}}
+ENTRYPOINT ["/app"]
