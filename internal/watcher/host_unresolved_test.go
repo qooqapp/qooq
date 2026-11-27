@@ -72,7 +72,7 @@ func TestARepeatedPrefixIsSaidOnce(t *testing.T) {
 	// call unguarded: removing it kept every test green.
 	tg2 := &Target{Name: "web2", ComponentName: "web2"}
 	saveTarget(t, w, tg2)
-	w.recordNeedsInput(tg2, "qooq.yaml: qooq.yaml: needs API_KEY")
+	w.recordNeedsInput(tg2, "qooq.yaml: qooq.yaml: needs API_KEY", nil)
 	got := getTargetByID(t, w.db, tg2.ID)
 	if got.LastBuildStatus != BuildStatusNeedsInput || got.LastBuildError != "qooq.yaml: needs API_KEY" {
 		t.Errorf("needs input stored %q / %q", got.LastBuildStatus, got.LastBuildError)

@@ -47,6 +47,11 @@ type componentResolver struct {
 	loaded bool
 	failed bool
 
+	// reserved is qooqd's reservations (components with an address set aside
+	// but not deployed yet), asked for only when a name is not deployed.
+	reserved       []client.ComponentResponse
+	reservedLoaded bool
+
 	// pending records a component that was referenced but is not deployed yet,
 	// which is a different condition from a typo: it fixes itself once that
 	// component exists, so the deploy waits rather than failing.
@@ -129,6 +134,23 @@ func (r *componentResolver) lookup(name string) *client.ComponentResponse {
 			return c
 		}
 	}
+	// Not deployed, but its address may already be reserved (its own deploy
+	// got as far as reserving before it stopped to wait for something).
+	// Everything a reference can ask for is part of the address, so it
+	// resolves now — and two apps that name each other no longer wait on
+	// each other forever.
+	if !r.reservedLoaded {
+		r.reservedLoaded = true
+		if res, err := r.client.ListReservations(r.ctx); err == nil {
+			r.reserved = res
+		}
+	}
+	for i := range r.reserved {
+		c := &r.reserved[i]
+		if c.Namespace == r.namespace && c.Name == name {
+			return c
+		}
+	}
 	r.note(name)
 	return nil
 }
@@ -140,6 +162,13 @@ func (r *componentResolver) note(name string) {
 		}
 	}
 	r.pending = append(r.pending, name)
+}
+
+// pendingNames is the sorted names referenced but not deployed yet.
+func (r *componentResolver) pendingNames() []string {
+	names := append([]string(nil), r.pending...)
+	sort.Strings(names)
+	return names
 }
 
 // waitingFor describes what this deploy is waiting to exist, or "" if nothing.
@@ -211,6 +240,12 @@ func (r *componentResolver) lookupCached(name string) *client.ComponentResponse 
 	for i := range r.comps {
 		c := &r.comps[i]
 		if c.Namespace == r.namespace && c.Name == name && c.Phase != "Removed" {
+			return c
+		}
+	}
+	for i := range r.reserved {
+		c := &r.reserved[i]
+		if c.Namespace == r.namespace && c.Name == name {
 			return c
 		}
 	}

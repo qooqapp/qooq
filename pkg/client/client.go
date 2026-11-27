@@ -297,6 +297,37 @@ func (c *Client) Upsert(ctx context.Context, req DeployRequest) (*ComponentRespo
 	return &out, nil
 }
 
+// PhaseReserved is the phase of a component that has an address reserved
+// (Reserve) but has not been deployed yet.
+const PhaseReserved = "Reserved"
+
+// Reserve sets aside the address req would get, before it is deployed: its
+// auto host ports are assigned now and kept for it. A name that is already
+// deployed is answered with that component. Image is not needed.
+func (c *Client) Reserve(ctx context.Context, req DeployRequest) (*ComponentResponse, error) {
+	var out ComponentResponse
+	if err := c.do(ctx, http.MethodPut, "/v1/reservations", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListReservations returns the reservations not yet used by a deploy, each in
+// the shape of the component it will become (phase PhaseReserved).
+func (c *Client) ListReservations(ctx context.Context) ([]ComponentResponse, error) {
+	var out []ComponentResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/reservations", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ReleaseReservation drops a reservation; one that does not exist is not an error.
+func (c *Client) ReleaseReservation(ctx context.Context, namespace, name string) error {
+	q := url.Values{"namespace": {namespace}, "name": {name}}
+	return c.do(ctx, http.MethodDelete, "/v1/reservations?"+q.Encode(), nil, nil)
+}
+
 func (c *Client) ListComponents(ctx context.Context) ([]ComponentResponse, error) {
 	var out []ComponentResponse
 	if err := c.do(ctx, http.MethodGet, "/v1/components", nil, &out); err != nil {

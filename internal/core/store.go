@@ -17,6 +17,12 @@ type Store interface {
 	ListGroups() ([]*Group, error)
 	DeleteGroup(id string) error
 
+	// Reservations are host ports set aside for a component that does not
+	// exist yet; see Service.Reserve. Keyed by (namespace, name).
+	SaveReservation(r *Reservation) error
+	ListReservations() ([]*Reservation, error)
+	DeleteReservation(namespace, name string) error
+
 	AppendEvent(componentID string, e Event) error
 	ListEvents(componentID string) ([]Event, error)
 

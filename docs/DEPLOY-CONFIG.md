@@ -406,6 +406,13 @@ is two different things; `${component.api...}` always refers to the one in its o
 **Referencing a component that has not been deployed yet is not a failure**: it stops at `needs_input` (`watch get` shows who it is waiting for),
 and the next sweep retries automatically — that is an ordering issue and resolves itself.
 
+**Two apps that reference each other deploy too** (say the api's CORS list names the web app's URL and the web app names the api's):
+before a deploy resolves its env, it **reserves** its own address with qooqd (its `auto:` ports are assigned and kept at that point),
+so whichever is tried second can read the first one's address, and the first follows on the next sweep. A reserved port is never handed
+to anyone else, the deploy gets exactly that port, and deleting the target releases it.
+A loop that still cannot resolve (for example a qooqd older than the watcher) says `circular reference: a -> b -> a`
+instead of "not deployed yet" forever.
+
 > There is no reverse tracking: if the referenced component changes its port, the app that references it does **not** redeploy automatically.
 > In practice this rarely comes up, because a port allocated by `auto:` does not change (see the previous section); if you really do change it, redeploy the referencing side.
 

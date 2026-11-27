@@ -137,6 +137,15 @@ type Target struct {
 	// describes a deploy older than the one running.
 	Topology string `gorm:"not null;default:''" json:"-"`
 
+	// WaitingOn is the comma-separated component names the last needs_input
+	// was waiting to exist (${component.X.*} naming something not deployed
+	// yet), or "" when it was waiting on anything else. It is only what lets
+	// two targets that wait on each other be told apart from one that is
+	// merely early: without it every target in a cycle reads "not deployed
+	// yet" forever. Rewritten on every needs_input; read only while the
+	// status is still needs_input.
+	WaitingOn string `gorm:"not null;default:''" json:"-"`
+
 	// WebhookSecret is reserved for M13 (webhook signature verification).
 	// Never returned by the API in plaintext.
 	WebhookSecret string `json:"-"`

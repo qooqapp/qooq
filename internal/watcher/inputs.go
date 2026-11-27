@@ -12,13 +12,24 @@ import (
 // It is a distinct type rather than a status flag because the decision belongs
 // where the cause is known — deep inside the pipeline — and the recording
 // happens at the top.
-type errNeedsInput struct{ err error }
+type errNeedsInput struct {
+	err error
+	// waitingOn names the components this deploy is waiting to exist, when
+	// that is what it is blocked on; see Target.WaitingOn.
+	waitingOn []string
+}
 
 func (e errNeedsInput) Error() string { return e.err.Error() }
 func (e errNeedsInput) Unwrap() error { return e.err }
 
 // needsInput marks err as a missing-input condition rather than a failure.
 func needsInput(err error) error { return errNeedsInput{err: err} }
+
+// waitingOnComponents marks err as needs_input because the components named
+// are not deployed yet.
+func waitingOnComponents(err error, names []string) error {
+	return errNeedsInput{err: err, waitingOn: names}
+}
 
 // buildBlocked reports whether a build status means the target is not
 // currently deployed from its latest source — failed outright, or waiting on

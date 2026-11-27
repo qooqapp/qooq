@@ -497,14 +497,33 @@ func (s *Service) reserveName(comp *Component) error {
 	// makes two simultaneous deploys unable to be handed the same port: this
 	// is already the critical section that holds the only complete view of
 	// what every component claims, and it ends by writing this one down.
+	//
+	// A reservation for this name (Reserve) is honoured as if it were this
+	// component's previous deploy: the address other apps were already given
+	// is the one it gets. Everyone else's reservations count as taken.
+	reserved, all, err := s.reservedFor(comp.Spec)
+	if err != nil {
+		return err
+	}
 	if hasAutoPort(comp.Spec.Ports) {
-		ports, err := resolveAutoPorts(comp.Spec.Ports, nil, takenHostPorts(existing, comp.ID), s.autoPortLow, s.autoPortHigh)
+		taken := takenHostPorts(existing, comp.ID)
+		addReservedPorts(taken, all, comp.Spec)
+		ports, err := resolveAutoPorts(comp.Spec.Ports, reserved, taken, s.autoPortLow, s.autoPortHigh)
 		if err != nil {
 			return err
 		}
 		comp.Spec.Ports = ports
 	}
-	return s.store.SaveComponent(comp)
+	if err := s.store.SaveComponent(comp); err != nil {
+		return err
+	}
+	// The component now holds the ports itself; the promise is kept.
+	if findReservation(all, comp.Spec) != nil {
+		if err := s.store.DeleteReservation(comp.Spec.Namespace, comp.Spec.Name); err != nil {
+			s.log.Warn("could not drop a used port reservation", "component", displayName(comp.Spec), "err", err)
+		}
+	}
+	return nil
 }
 
 // resolveAutoPortsFor assigns host ports for a spec replacing an existing
@@ -524,7 +543,13 @@ func (s *Service) resolveAutoPortsFor(spec ComponentSpec, prev *Component) (Comp
 	if err != nil {
 		return spec, err
 	}
-	ports, err := resolveAutoPorts(spec.Ports, prev.Spec.Ports, takenHostPorts(existing, prev.ID), s.autoPortLow, s.autoPortHigh)
+	_, all, err := s.reservedFor(spec)
+	if err != nil {
+		return spec, err
+	}
+	taken := takenHostPorts(existing, prev.ID)
+	addReservedPorts(taken, all, spec)
+	ports, err := resolveAutoPorts(spec.Ports, prev.Spec.Ports, taken, s.autoPortLow, s.autoPortHigh)
 	if err != nil {
 		return spec, err
 	}

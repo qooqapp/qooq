@@ -48,6 +48,10 @@ Limits worth knowing before you rely on it:
   stack's projects share the stack's namespace, so the common cases work unremarked.
 - **Referencing something not deployed yet is not an error.** The build reports
   `needs_input` and retries on the next sweep, so the order you deploy in does not matter.
+  That includes two projects that reference each other (an api whose CORS list names the
+  web app's URL, and a web app that names the api's): each one's address (its `auto:` port)
+  is reserved before its env is resolved, so whichever is tried second finds the first's,
+  and the first follows. A loop that still cannot resolve says `circular reference: a -> b -> a`.
   A misspelt name says so instead — the two are distinguished on purpose.
 - Omitting the field's port uses the first entry of the other project's `run.ports`.
 

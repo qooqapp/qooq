@@ -416,6 +416,88 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/reservations:
+    put:
+      tags: [components]
+      summary: Reserve a component's address before it is deployed
+      description: |
+        Assigns the request's `auto` host ports now and keeps them for this
+        (namespace, name), so another component's
+        `${component.<name>.endpoint}` can resolve before this one runs. Two
+        components that reference each other can then both deploy. The
+        reservation is used up when a component of that name is created (it
+        gets exactly these ports) and no other component is handed them.
+        `image` is not needed. When the name is already deployed, the
+        component itself is returned. Calling it again returns the same ports.
+      operationId: reserveComponent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeployRequest"
+      responses:
+        "200":
+          description: |
+            The address as it will be once deployed: a component with
+            `phase: Reserved` and no `id`, or the deployed component.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: No free port is left in the auto port range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [components]
+      summary: List reservations not yet used by a deploy
+      operationId: listReservations
+      responses:
+        "200":
+          description: Each reservation in the shape of the component it will become (`phase: Reserved`).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ComponentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [components]
+      summary: Release a reservation
+      description: Releasing one that does not exist is not an error.
+      operationId: releaseReservation
+      parameters:
+        - name: namespace
+          in: query
+          schema: { type: string, default: default }
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Released (or there was nothing to release).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /v1/groups:
     post:
       tags: [groups]
@@ -1059,8 +1141,8 @@ components:
           type: string
         phase:
           type: string
-          description: Runtime-neutral lifecycle phase.
-          enum: [Pending, Creating, Running, Exited, Failed, Removed]
+          description: Runtime-neutral lifecycle phase. `Reserved` only appears in /v1/reservations answers.
+          enum: [Pending, Creating, Running, Exited, Failed, Removed, Reserved]
         container_id:
           type: string
         exit_code:

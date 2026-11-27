@@ -399,7 +399,12 @@ than localhost — what has to be verified is that the URL you report actually w
 > project waiting for another component to finish deploying, which resolves itself on the
 > next sweep — `watch get <target>` names who it is waiting for. Wait, or
 > `watch trigger <target>`, and re-run. Asking the user for a value here produces a
-> question with no answer.
+> question with no answer. Two projects that reference each other's address also resolve
+> on their own: each one's address is reserved before its env is resolved, so the second
+> one deploys and the first follows on the next sweep. Only if `last_build_error` starts
+> with `circular reference` is it stuck (usually a qooqd older than the watcher): tell the
+> user which projects form the loop, and for the first deploy give one of them a fixed
+> value instead of the `${component...}` reference, then put it back and redeploy.
 >
 > Otherwise the script prints `MISSING_INPUT=<name> | <description> | e.g. <example>`. Then:
 > 1. Ask the user for each one **using the description it printed** (do not invent a value,

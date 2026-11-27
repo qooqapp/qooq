@@ -303,7 +303,11 @@ func (w *Watcher) applyRunConfig(ctx context.Context, t *Target, mf *manifest, s
 	var hostErr error
 	defer func() {
 		if err != nil && crossRef.waitingFor() != "" {
-			err = needsInput(err)
+			pending := crossRef.pendingNames()
+			if cycle := w.waitCycle(t, namespace, pending); cycle != nil {
+				err = &wordedError{err: err, msg: circularReferenceMessage(cycle, namespace)}
+			}
+			err = waitingOnComponents(err, pending)
 		}
 		if err != nil && hostErr != nil && isNotTheRepository(notTheDaemon(hostErr)) {
 			// The interpolation error says "unknown reference ${host}" while

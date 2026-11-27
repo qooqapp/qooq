@@ -20,6 +20,7 @@ type fakeStore struct {
 	mu         sync.Mutex
 	components map[string]*Component
 	events     map[string][]Event
+	reserved   map[string]*Reservation
 }
 
 func newFakeStore() *fakeStore {
@@ -102,6 +103,35 @@ func (f *fakeStore) Backup(w io.Writer, sizeHint func(int64)) error {
 }
 
 func (f *fakeStore) Close() error { return nil }
+
+func (f *fakeStore) SaveReservation(r *Reservation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reserved == nil {
+		f.reserved = map[string]*Reservation{}
+	}
+	cp := *r
+	f.reserved[r.Spec.Namespace+"/"+r.Spec.Name] = &cp
+	return nil
+}
+
+func (f *fakeStore) ListReservations() ([]*Reservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*Reservation, 0, len(f.reserved))
+	for _, r := range f.reserved {
+		cp := *r
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
+func (f *fakeStore) DeleteReservation(namespace, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.reserved, namespace+"/"+name)
+	return nil
+}
 
 // call records a single invocation of a fakeRuntime method for assertion.
 type call struct {

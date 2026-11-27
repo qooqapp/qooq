@@ -1,5 +1,5 @@
 // Package bbolt implements core.Store on top of go.etcd.io/bbolt (pure-Go KV,
-// single file, no cgo). Buckets: components, groups, events. Events are stored
+// single file, no cgo). Buckets: components, groups, events, reservations. Events are stored
 // in a per-component nested bucket, append-only with a per-component cap.
 package bbolt
 
@@ -22,6 +22,7 @@ var (
 	bucketComponents = []byte("components")
 	bucketGroups     = []byte("groups")
 	bucketEvents     = []byte("events")
+	bucketReserved   = []byte("reservations")
 )
 
 // maxEventsPerComponent caps the append-only per-component event log.
@@ -49,7 +50,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open bbolt %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketComponents, bucketGroups, bucketEvents} {
+		for _, name := range [][]byte{bucketComponents, bucketGroups, bucketEvents, bucketReserved} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
@@ -182,6 +183,42 @@ func (s *Store) ListGroups() ([]*core.Group, error) {
 func (s *Store) DeleteGroup(id string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketGroups).Delete([]byte(id))
+	})
+}
+
+func reservationKey(namespace, name string) []byte { return []byte(namespace + "/" + name) }
+
+func (s *Store) SaveReservation(r *core.Reservation) error {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketReserved).Put(reservationKey(r.Spec.Namespace, r.Spec.Name), data)
+	})
+}
+
+func (s *Store) ListReservations() ([]*core.Reservation, error) {
+	var out []*core.Reservation
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketReserved).ForEach(func(_, v []byte) error {
+			var r core.Reservation
+			if err := json.Unmarshal(v, &r); err != nil {
+				return err
+			}
+			out = append(out, &r)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Store) DeleteReservation(namespace, name string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketReserved).Delete(reservationKey(namespace, name))
 	})
 }
 

@@ -438,6 +438,7 @@ func (w *Watcher) handleDeleteTarget(c *gin.Context) {
 	if t.DeployMode == DeployModeUpload {
 		w.removeStoredUploads(t.Name)
 	}
+	w.releaseReservation(c.Request.Context(), t)
 	c.Status(http.StatusNoContent)
 }
 

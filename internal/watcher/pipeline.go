@@ -211,7 +211,7 @@ func (w *Watcher) checkAndMaybeBuild(ctx context.Context, t *Target) {
 		var needs errNeedsInput
 		if errors.As(err, &needs) {
 			log.Info("deploy is waiting on input values", zap.String("err", err.Error()))
-			w.recordNeedsInput(t, err.Error())
+			w.recordNeedsInput(t, err.Error(), needs.waitingOn)
 			return
 		}
 		log.Error("pipeline failed", zap.String("err", maskRepoCredentials(err.Error(), t.RepoURL)))
@@ -463,6 +463,7 @@ func (w *Watcher) runPipeline(ctx context.Context, t *Target) error {
 	// below still lets deploy_spec win field by field.
 	// A rebuild without services or references must not inherit the old ones.
 	t.Topology = ""
+	w.reserveAddress(ctx, t, deployRef, manifestSpec)
 	if mf != nil {
 		manifestSpec, err = w.applyRunConfig(ctx, t, mf, manifestSpec, dir, shortSHA(headHash))
 		if err != nil {
@@ -1222,13 +1223,15 @@ func collapseRepeatedPrefix(msg string) string {
 // recordFailure it leaves LastCommit alone so the next sweep re-evaluates —
 // which is what makes supplying the value take effect without the repo having
 // to change. LastBuildAt is not touched either: no build ran.
-func (w *Watcher) recordNeedsInput(t *Target, msg string) {
+func (w *Watcher) recordNeedsInput(t *Target, msg string, waitingOn []string) {
 	msg = collapseRepeatedPrefix(msg) // guarded by TestARepeatedPrefixIsSaidOnce's round trip
 	t.LastBuildStatus = BuildStatusNeedsInput
 	t.LastBuildError = msg
+	t.WaitingOn = strings.Join(waitingOn, ",")
 	if err := w.db.Model(&Target{}).Where("id = ?", t.ID).Updates(map[string]any{
 		"last_build_status": BuildStatusNeedsInput,
 		"last_build_error":  msg,
+		"waiting_on":        t.WaitingOn,
 	}).Error; err != nil {
 		w.log.Warn("failed to persist needs-input state", zap.String("target", t.Name), zap.Error(err))
 	}

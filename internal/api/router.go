@@ -97,6 +97,12 @@ func NewRouter(svc *core.Service, log *slog.Logger, token, listenAddr string, ex
 				r.Get("/{id}/logs", h.componentLogs)
 			})
 
+			r.Route("/reservations", func(r chi.Router) {
+				r.With(requireJSONContentType).Put("/", h.reserve)
+				r.Get("/", h.listReservations)
+				r.Delete("/", h.releaseReservation)
+			})
+
 			r.Route("/groups", func(r chi.Router) {
 				r.With(requireJSONContentType).Post("/", h.createGroup)
 				r.Get("/", h.listGroups)
